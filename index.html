@@ -176,7 +176,8 @@ tbody tr.row-bl td b{color:var(--red)}
   background:var(--ink);color:#fff;padding:13px 18px;border-radius:6px;font-size:.92rem;
   box-shadow:0 10px 30px rgba(0,0,0,.3);display:flex;align-items:center;max-width:92vw}
 .consent{border:1.5px solid var(--line);border-radius:5px;padding:14px;background:var(--tint);margin-bottom:16px}
-.privacy-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+.privacy-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}
+@media(max-width:1180px){.privacy-grid{grid-template-columns:1fr 1fr}}
 .privacy-grid p{font-size:.93rem}
 @media(max-width:820px){.privacy-grid{grid-template-columns:1fr}}
 .spin{padding:50px 20px;text-align:center;color:var(--grey);font-family:var(--mono);font-size:.85rem;letter-spacing:.1em;text-transform:uppercase}
@@ -757,6 +758,7 @@ const ZH = {
   "and agrees to MySolar keeping these details for warranty and service purposes.":"并同意 MySolar 保留这些资料用于保修与售后服务。",
   "The customer must be shown the privacy notice and agree before their details can be saved.":"必须先向客户出示隐私声明并获得同意，才能保存其资料。",
   "Name, phone and install date are required.":"必须填写姓名、电话和安装日期。",
+  "Back":"返回",
 
   /* customer-facing page */
   "Check your MySolar warranty":"查询您的 MySolar 保修",
@@ -1511,13 +1513,16 @@ function viewNew(){
 
 
 /* ---------- privacy notice (PDPA) ---------- */
-/* Malaysia's PDPA requires the notice in both Bahasa Malaysia and English.
+/* Malaysia's PDPA requires the notice in Bahasa Malaysia and English. Chinese
+   is here because the owners and many customers read it more comfortably, and
+   this is the page the consent tick-box links to — consent given against text
+   somebody cannot read is not worth much.
    Keep both columns in step if you change the wording, and bump the version
    in register_installation so it is clear which text a customer agreed to. */
 function viewPrivacy(){
-  return `<div class="page" style="max-width:880px">
-    <button class="crumb" onclick="history.length>1?history.back():location.hash='#/check'">&larr; Back</button>
-    <h1>Privacy Notice · Notis Privasi</h1>
+  return `<div class="page" style="max-width:1180px">
+    <button class="crumb" onclick="history.length>1?history.back():location.hash='#/check'">&larr; ${t("Back")}</button>
+    <h1>Privacy Notice · Notis Privasi · 隐私声明</h1>
     <p class="tiny muted" style="margin-top:6px">Version 1 · MySolar Sales And Marketing Sdn Bhd</p>
 
     <div class="privacy-grid">
@@ -1582,6 +1587,31 @@ function viewPrivacy(){
 
         <p><b>Pemberian maklumat ini adalah secara sukarela</b>, namun tanpanya kami
         tidak dapat mendaftarkan waranti atau memberikan servis waranti.</p>
+      </div>
+
+      <div class="card card-pad">
+        <h3 style="margin-bottom:12px">中文</h3>
+        <p><b>我们收集什么。</b> 您的姓名、电话号码、电邮地址（如有提供）、安装地址，
+        以及所安装系统的资料 —— 型号、机身编号、安装日期、服务记录与保修索赔。</p>
+
+        <p><b>为何收集。</b> 用于登记并履行您的保修、在您要求服务时识别您的系统、
+        就保养或保修事宜与您联系，以及保存售后支援所需的记录。</p>
+
+        <p><b>谁能看到。</b> MySolar 员工，以及我们的安装与服务技术人员。
+        若您的系统是经由授权经销商供应，该经销商可能会获得维修所需的资料。
+        我们不会出售您的资料，也不会提供给其他公司作市场推广用途。</p>
+
+        <p><b>存放在哪里。</b> 存放于 Supabase 运营的安全数据库，服务器位于新加坡。
+        存取须使用个人员工账户。</p>
+
+        <p><b>保存多久。</b> 在保修期内，以及其后一段合理期间以保留服务记录，
+        之后将删除或匿名处理。</p>
+
+        <p><b>您的权利。</b> 您可要求查阅我们持有的您的个人资料、更正错误之处，
+        或限制我们的使用方式。请电邮 <span class="mono">info@mysolar.my</span>
+        或致电 <span class="mono">1300 888 048</span>，我们将在 21 天内回复。</p>
+
+        <p>提供这些资料属自愿性质，但若未提供，我们将无法为您登记保修或提供保修服务。</p>
       </div>
     </div>
   </div>`;
