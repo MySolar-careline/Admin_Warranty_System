@@ -643,7 +643,7 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under tank warranty":"保修期内","Open claims":"未结索赔",
+  "Under tank warranty":"水箱保修期内","Open claims":"未结索赔",
   "Repeat repairs":"重复维修","Unpaid visits":"未付款","Expired":"已过期",
   "Search":"搜索","Status":"状态","Sold via":"来源","Repairs":"维修次数",
   "All":"全部","Direct":"直销","Dealer":"经销商","Customer":"客户",
@@ -759,6 +759,12 @@ const ZH = {
   "The customer must be shown the privacy notice and agree before their details can be saved.":"必须先向客户出示隐私声明并获得同意，才能保存其资料。",
   "Name, phone and install date are required.":"必须填写姓名、电话和安装日期。",
   "Back":"返回",
+  "Nothing due right now.":"目前没有待办事项。",
+  "Press":"按",
+  "to check for newly due follow-ups.":"即可查看新到期的跟进事项。",
+  "Changes apply the next time the follow-up list is refreshed. Nothing already on the list is removed.":"更改将在下次刷新跟进清单时生效。清单上已有的事项不会被移除。",
+  "Turning an alert off stops new items being created. It does not delete anything already in the follow-up list.":"关闭提醒后将不再产生新的事项，但不会删除跟进清单上已有的事项。",
+  "Privacy notice":"隐私声明",
 
   /* customer-facing page */
   "Check your MySolar warranty":"查询您的 MySolar 保修",
@@ -830,6 +836,19 @@ function overdueText(days){
   if (d < 365) return Math.round(d/30) + " mths overdue";
   const y = Math.floor(d/365);
   return "overdue " + y + (y === 1 ? " yr+" : " yrs+");
+}
+
+/* models.pax holds "Up to 4" / "4 to 6" — English, from the database. Convert
+   rather than translate, so adding a model later does not need a code change. */
+function paxText(p){
+  const v = String(p || "").trim();
+  if(!v) return "—";
+  if(LANG !== "zh") return v + " pax";
+  const range = v.match(/(\d+)\s*to\s*(\d+)/i);
+  if(range) return range[1] + "–" + range[2] + " 人";
+  const upto = v.match(/up\s*to\s*(\d+)/i);
+  if(upto) return "最多 " + upto[1] + " 人";
+  return v;
 }
 
 function coverage(row){
@@ -1027,7 +1046,7 @@ function viewCheck(){
       ${t("Your warranty number is on the plate at the end of the tank and on your installation slip. Can't find it? WhatsApp 012-318 0048 and we'll look it up.")}
     </p>
     <p class="tiny muted" style="margin:10px 0 0">
-      <a href="#/privacy">Privacy notice · Notis privasi</a>
+      <a href="#/privacy">${t("Privacy notice")} · Notis privasi · 隐私声明</a>
     </p>
   </div>
   <div id="lkResult" style="max-width:620px;margin:18px auto 0"></div></div>`;
@@ -1414,7 +1433,7 @@ async function viewDetail(id){
             <div class="barlbl"><span>${fmt(r.installDate)}</span><span>${fmt(c.wEnd)}</span></div></div>
           <dl class="kv" style="padding-top:6px">
             <dt>${t("Model")}</dt><dd>${esc(c.model.name)}</dd>
-            <dt>${t("Capacity")}</dt><dd>${c.model.litres} L · ${c.model.gallons} gal · ${esc(c.model.pax)} pax</dd>
+            <dt>${t("Capacity")}</dt><dd>${c.model.litres} L · ${c.model.gallons} gal · ${esc(paxText(c.model.pax))}</dd>
             <dt>${t("Tank steel")}</dt><dd>${esc(c.model.steel)}</dd>
             <dt>${t("Copper tubes / panel")}</dt><dd>${c.model.tubes} · ${esc(c.model.panel)}</dd>
             <dt>${t("Installed")}</dt><dd>${fmt(r.installDate)}</dd>
@@ -1694,8 +1713,7 @@ async function viewSettings(){
 
   return `<div class="page">
     <h1>${t("Settings")}</h1>
-    <p class="tiny muted" style="margin:6px 0 22px">Changes apply the next time the
-      follow-up list is refreshed. Nothing already on the list is removed.</p>
+    <p class="tiny muted" style="margin:6px 0 22px">${t("Changes apply the next time the follow-up list is refreshed. Nothing already on the list is removed.")}</p>
     <div id="setMsg"></div>
 
     <div class="card" style="margin-bottom:22px">
@@ -1730,8 +1748,7 @@ async function viewSettings(){
     </div>
 
     <p class="tiny muted" style="margin-top:16px">
-      Turning an alert off stops new items being created. It does not delete
-      anything already in the follow-up list.</p>
+      ${t("Turning an alert off stops new items being created. It does not delete anything already in the follow-up list.")}</p>
   </div>`;
 }
 
@@ -1879,7 +1896,8 @@ async function viewFollowups(){
       </div>
     </div>`;
   }).join("") : `<div class="card empty">${counts.all === 0
-      ? "Nothing due right now.<br><span class='tiny'>Tap “Refresh list” to check for newly due follow-ups.</span>"
+      ? `${t("Nothing due right now.")}<br><span class="tiny">${
+            t("Press")} “${t("Refresh list")}” ${t("to check for newly due follow-ups.")}</span>`
       : "No follow-ups match that filter."}</div>`;
 
   return `<div class="page">
