@@ -948,25 +948,73 @@ function lastActivityStored(){
   return v ? Number(v) : null;
 }
 
+/* Record "someone is here" in memory AND in localStorage (shared by every
+   tab, and it survives the page being frozen or reloaded). */
+function stamp(t){
+  lastActivity = t; lastMark = t;
+  try { localStorage.setItem("mysolar_last_activity", String(t)); } catch(e) {}
+}
+/* The most recent activity seen by any tab. */
+function lastSeen(){
+  return Math.max(lastActivity, lastActivityStored() || 0);
+}
+
 function markActivity(){
   const now = Date.now();
   if (now - lastMark < 5000) return;      // throttle
-  try { localStorage.setItem("mysolar_last_activity", String(now)); } catch(e) {}
-  lastMark = now; lastActivity = now;
+  /* THE FIX: if the machine was asleep, or Chrome froze this tab, the 20-second
+     timer never got to run. The first mouse movement on return used to reset
+     the idle clock and keep the session alive. If the limit has already
+     passed, that movement must not revive it — sign out instead. */
+  if (USER && now - lastSeen() > IDLE_LIMIT_MIN * 60e3) { checkSession(); return; }
+  stamp(now);
   const w = document.getElementById("idleWarn");
   if (w) w.remove();
 }
-["click","keydown","mousemove","touchstart","scroll"].forEach(ev =>
-  window.addEventListener(ev, markActivity, { passive: true }));
+/* pointerdown and touchstart cover phones and tablets; mousemove and keydown
+   cover computers. */
+["pointerdown","click","keydown","mousemove","touchstart","scroll"].forEach(ev =>
+  window.addEventListener(ev, markActivity, { passive: true, capture: true }));
+/* Returning to the tab, waking the computer, restoring from back/forward cache */
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkSession(); });
+window.addEventListener("focus",    () => checkSession());
+window.addEventListener("pageshow", () => checkSession());
+
+/* If another tab signs out, this one must follow immediately. */
+sb.auth.onAuthStateChange((event) => {
+  if (event === "SIGNED_OUT" && USER) {
+    USER = null; FU_COUNT = 0; setSessionStart(null);
+    setTimeout(() => { location.hash = "#/admin"; render(); }, 0);
+  }
+});
+
+/* Remove the stored login token from this browser directly. Used as well as
+   the normal sign-out, because a phone coming back with no signal cannot
+   reach the server to sign out — the token must still be gone. */
+function wipeLocalSession(){
+  try {
+    Object.keys(localStorage)
+      .filter(k => k.startsWith("sb-") && k.includes("auth-token"))
+      .forEach(k => localStorage.removeItem(k));
+  } catch(e) {}
+}
 
 async function forceSignOut(msg){
+  /* Clear the screen FIRST. Customer data must not stay visible while a
+     network call to sign out is in progress — or fails because the phone
+     has no signal. */
   AUTH_MSG = msg;
-  setSessionStart(null);
-  try { await DataSource.signOut(); } catch(e) {}
   USER = null; FU_COUNT = 0;
+  setSessionStart(null);
+  try { localStorage.removeItem("mysolar_last_activity"); } catch(e) {}
+  if (guardTimer) { clearInterval(guardTimer); guardTimer = null; }
+  const w = document.getElementById("idleWarn"); if (w) w.remove();
   location.hash = "#/admin";
   render();
+  /* "local" signs out this device only, so a timeout on the office PC does
+     not also sign the same person out of their phone. */
+  try { await sb.auth.signOut({ scope: "local" }); } catch(e) {}
+  wipeLocalSession();
 }
 
 function showIdleWarning(secsLeft){
@@ -977,8 +1025,7 @@ function showIdleWarning(secsLeft){
   d.innerHTML = `Signing you out in about ${Math.ceil(secsLeft/60)} minute(s) for security.
     <button class="btn btn-s" style="padding:7px 14px;font-size:.86rem;margin-left:10px">${t("Stay signed in")}</button>`;
   d.querySelector("button").onclick = () => {
-    lastActivity = Date.now();
-    try { localStorage.setItem("mysolar_last_activity", String(lastActivity)); } catch(e) {}
+    stamp(Date.now());
     d.remove();
   };
   document.body.appendChild(d);
@@ -988,12 +1035,14 @@ async function checkSession(){
   if (!USER) return;
   const now = Date.now();
 
+  /* No start stamp (storage cleared) must not mean "no 12-hour limit". */
+  if (!sessionStart()) setSessionStart(now);
   const started = sessionStart();
-  if (started && now - started > MAX_SESSION_HRS * 3600e3) {
+  if (now - started > MAX_SESSION_HRS * 3600e3) {
     return forceSignOut(`Signed out after ${MAX_SESSION_HRS} hours. Please sign in again.`);
   }
 
-  const idleMs = now - lastActivity;
+  const idleMs = now - lastSeen();
   if (idleMs > IDLE_LIMIT_MIN * 60e3) {
     return forceSignOut(`Signed out after ${IDLE_LIMIT_MIN} minutes of inactivity.`);
   }
@@ -2013,7 +2062,7 @@ async function render(){
         btn.disabled = false; btn.textContent = t("Sign in");
         if(res.ok){
           USER = res.user; AUTH_MSG = "";
-          lastActivity = Date.now(); setSessionStart(Date.now()); startSessionGuard();
+          stamp(Date.now()); setSessionStart(Date.now()); startSessionGuard();
           FU_COUNT = await DataSource.countFollowups();
           location.hash = "#/admin/list"; render();
         }
@@ -2472,8 +2521,8 @@ async function loadModels(){
        signed in overnight was wide open after a refresh. Trust the stored
        stamp instead. */
     const seen = lastActivityStored();
-    lastActivity = seen || Date.now();
-    if (Date.now() - lastActivity > IDLE_LIMIT_MIN * 60e3) {
+    lastActivity = seen || 0;
+    if (Date.now() - lastSeen() > IDLE_LIMIT_MIN * 60e3) {
       await forceSignOut("You were signed out because the system was left idle. Please sign in again.");
       return;
     }
