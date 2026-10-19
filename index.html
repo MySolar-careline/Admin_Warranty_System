@@ -179,6 +179,23 @@ tbody tr.row-bl td b{color:var(--red)}
 .tab.on{background:var(--blue);border-color:var(--blue);color:#fff}
 .tabn{background:rgba(0,0,0,.12);border-radius:99px;padding:1px 7px;font-size:.78rem}
 .tab.on .tabn{background:rgba(255,255,255,.25)}
+#printArea{display:none}
+@media print{
+  body.printing > *:not(#printArea){display:none !important}
+  body.printing #printArea{display:block}
+  body.printing{background:#fff}
+  .ph{font-family:var(--sans);color:#000;font-size:11pt}
+  .ph-top{display:flex;justify-content:space-between;border-bottom:2px solid #000;padding-bottom:6px;margin-bottom:10px;font-size:13pt}
+  .ph-top span{font-size:9pt;font-weight:400}
+  .ph h4{margin:14px 0 6px;font-size:11.5pt}
+  .ph-kv th{text-align:left;font-weight:600;padding:2px 14px 2px 0;vertical-align:top;white-space:nowrap}
+  .ph-kv td{padding:2px 0}
+  .ph-t{width:100%;border-collapse:collapse;font-size:9.5pt}
+  .ph-t th,.ph-t td{border:1px solid #888;padding:4px 6px;text-align:left;vertical-align:top}
+  .ph-t th{background:#eee}
+  .ph-t tr{page-break-inside:avoid}
+  .ph-foot{margin-top:16px;font-size:8.5pt;color:#444}
+}
 fieldset.addr{border:1px solid var(--line);border-radius:7px;padding:10px 14px 4px;margin:0 0 14px}
 fieldset.addr legend{font-size:.82rem;font-weight:600;color:var(--grey);padding:0 6px}
 .svc-kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;margin:6px 0 0;font-size:.85rem}
@@ -359,6 +376,7 @@ function rowFromView(v, service = [], claims = []) {
                                  tech:s.technician || "", note:s.notes || "",
                                  fault: s.is_fault_visit === true,
                                  parts: s.parts_replaced || "",
+                                 secondary: s.secondary_serial || "",
                                  chargeable: s.chargeable === true,
                                  amount: s.amount,
                                  payStatus: s.payment_status || "not_applicable",
@@ -447,7 +465,7 @@ const DataSource = {
       sb.from("service_visits").select("*").eq("installation_id", id).order("visit_date"),
       sb.from("claims").select("*").eq("installation_id", id).order("raised_on"),
       sb.from("v_maintenance").select("*").eq("installation_id", id).order("sort_order"),
-      sb.from("installations").select("has_filter,filter_install_date").eq("id", id).single()
+      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at").eq("id", id).single()
     ]);
     if (vRes.error || !vRes.data) return null;
     /* An error on any of these used to be swallowed, so a permissions or
@@ -459,6 +477,9 @@ const DataSource = {
     row.maintenance = mRes.data || [];
     row.hasFilter   = fRes.data ? fRes.data.has_filter === true : false;
     row.filterDate  = fRes.data ? (fRes.data.filter_install_date || "") : "";
+    row.voidedBy    = fRes.data ? (fRes.data.voided_by || "") : "";
+    row.voidedAt    = fRes.data ? (fRes.data.voided_at || "") : "";
+    row.voidedReason = vRes.data.voided_reason || "";
     REC_CACHE = { id, row, at: Date.now() };
     return row;
   },
@@ -523,7 +544,8 @@ const DataSource = {
       amount_paid:     visit.amountPaid != null && visit.amountPaid !== "" ? Number(visit.amountPaid) : null,
       paid_on:         visit.paidOn || null,
       due_on:          visit.chargeable === true ? (visit.dueOn || null) : null,
-      notes:           visit.note   || null
+      notes:           visit.note   || null,
+      secondary_serial: visit.secondary ? visit.secondary.trim().toUpperCase() : null
     });
     if (error) throw error;
     clearListCache();
@@ -604,9 +626,29 @@ const DataSource = {
       p_payment_status: v.payStatus || "unpaid",
       p_due_on: v.dueOn || null, p_notes: v.note,
       p_amount_paid: v.amountPaid != null && v.amountPaid !== "" ? Number(v.amountPaid) : null,
-      p_paid_on: v.paidOn || null });
+      p_paid_on: v.paidOn || null,
+      p_secondary_serial: v.secondary != null ? v.secondary : "" });
     if (error) throw error;
     clearListCache();
+  },
+  async removeInstallation(id, reason){
+    const { error } = await sb.rpc("remove_installation", { p_id: Number(id), p_reason: reason });
+    if (error) throw error;
+    clearListCache();
+  },
+  async restoreInstallation(id){
+    const { error } = await sb.rpc("restore_installation", { p_id: Number(id) });
+    if (error) throw error;
+    clearListCache();
+  },
+  async listAdmins(){
+    const { data, error } = await sb.from("admins").select("*").order("email");
+    if (error) throw error;
+    return data || [];
+  },
+  async setAdmin(email, on){
+    const { error } = await sb.rpc("set_admin", { p_email: email, p_on: on });
+    if (error) throw error;
   },
   async voidServiceVisit(id, reason){
     const { error } = await sb.rpc("void_service_visit", { p_id: Number(id), p_reason: reason });
@@ -687,7 +729,18 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under warranty":"保修期内","Installation site address":"安装地点地址","Address 1":"地址 1",
+  "Under warranty":"保修期内","Replacement tank S/N":"更换水箱机身号",
+  "Only if the tank was replaced on this visit":"仅在本次上门更换了水箱时填写",
+  "This record has been removed":"此记录已被删除","It no longer appears in the registry, searches or reminders.":"它不再出现在登记表、搜索或提醒中。",
+  "Restore this record":"恢复此记录","Print service history":"打印服务记录","Remove this record":"删除此记录",
+  "Removed records":"已删除的记录","Admins":"管理员","you":"你",
+  "Only admins can remove incorrect records and service visits, restore them, and change this list.":"只有管理员可以删除错误的记录和上门记录、恢复它们，以及修改此名单。",
+  "No admins yet. The first admin is added once in the database.":"尚未设置管理员。第一位管理员需在数据库中添加。",
+  "Staff login email":"员工登入电邮","Make admin":"设为管理员","Remove admin rights from":"取消以下人员的管理员权限：",
+  "Why is this record being removed? It can be restored later by an admin.":"为什么要删除此记录？管理员日后可以恢复。",
+  "Printed":"打印于","Customer":"客户","Maintenance schedule":"保养时间表","Next due":"下次到期","Last done":"上次完成",
+  "Date":"日期","Type":"类型",
+  "Internal record — contains customer personal data. Do not leave it with anyone outside MySolar.":"内部记录——含客户个人资料。请勿交给 MySolar 以外的任何人。","Installation site address":"安装地点地址","Address 1":"地址 1",
   "Address 2 (optional)":"地址 2（可选）","Postcode":"邮区编号","State":"州属","Choose state":"选择州属",
   "e.g. No. 12, Jalan SS2/1":"例：No. 12, Jalan SS2/1","e.g. Taman Bahagia":"例：Taman Bahagia",
   "Please enter a valid phone number, for example 012-345 6789. For a number outside Malaysia, start with +":"请输入有效的电话号码，例如 012-345 6789。马来西亚以外的号码请以 + 开头",
@@ -971,6 +1024,13 @@ const SKELETON = `<div class="page">
 let USER = null;
 let FILTER = { q:"", status:"all", channel:"all", faults:"all", pay:"all" };
 let FU_COUNT = 0;
+/* Admin rights live in the database (file 27) and every admin action is
+   checked there. This copy only decides which buttons to show. */
+let IS_ADMIN = false;
+async function refreshAdmin(){
+  try { const { data, error } = await sb.rpc("is_admin"); IS_ADMIN = !error && data === true; }
+  catch(e){ IS_ADMIN = false; }
+}
 
 /* ---------- session security ----------
    Supabase keeps a session alive indefinitely by default: the refresh token
@@ -1039,7 +1099,7 @@ window.addEventListener("pageshow", () => checkSession());
 /* If another tab signs out, this one must follow immediately. */
 sb.auth.onAuthStateChange((event) => {
   if (event === "SIGNED_OUT" && USER) {
-    USER = null; FU_COUNT = 0; setSessionStart(null);
+    USER = null; FU_COUNT = 0; IS_ADMIN = false; setSessionStart(null);
     setTimeout(() => { location.hash = "#/admin"; render(); }, 0);
   }
 });
@@ -1060,7 +1120,7 @@ async function forceSignOut(msg){
      network call to sign out is in progress — or fails because the phone
      has no signal. */
   AUTH_MSG = msg;
-  USER = null; FU_COUNT = 0;
+  USER = null; FU_COUNT = 0; IS_ADMIN = false;
   setSessionStart(null);
   try { localStorage.removeItem("mysolar_last_activity"); } catch(e) {}
   if (guardTimer) { clearInterval(guardTimer); guardTimer = null; }
@@ -1128,7 +1188,7 @@ function nav(){
   const o = $("#outBtn");
   if(o) o.onclick = async () => {
     setSessionStart(null); await DataSource.signOut();
-    USER = null; FU_COUNT = 0; AUTH_MSG = "";
+    USER = null; FU_COUNT = 0; IS_ADMIN = false; AUTH_MSG = "";
     location.hash = "#/check"; render();
   };
 }
@@ -1305,7 +1365,7 @@ async function viewList(){
     <div class="filters ${FILTERS_OPEN ? "show" : ""}">
       <div class="field"><label for="fs">${t("Warranty status")}</label>
         <select id="fs"><option value="all">${t("All")}</option><option value="guarantee">${t("Under guarantee")}</option>
-        <option value="warranty">${t("Under warranty")}</option><option value="expired">${t("Expired")}</option></select></div>
+        <option value="warranty">${t("Under warranty")}</option><option value="expired">${t("Expired")}</option>${IS_ADMIN ? `<option value="removed">${t("Removed records")}</option>` : ""}</select></div>
       <div class="field"><label for="fc">${t("Sold via")}</label>
         <select id="fc"><option value="all">${t("All")}</option><option value="direct">${t("Direct")}</option>
         <option value="dealer">${t("Dealer")}</option></select></div>
@@ -1414,6 +1474,64 @@ function priceText(s){
   return money(amt);
 }
 
+/* The tank currently fitted, if it was ever replaced: the most recent visit
+   (not removed) that recorded a replacement S/N. */
+function latestSecondary(r){
+  const list = (r.service || []).filter(s => !s.voided && s.secondary);
+  if(!list.length) return null;
+  return list.slice().sort((a,b) => String(a.date).localeCompare(String(b.date))).pop();
+}
+
+/* One unit's history on paper, for the technician to take on the next call.
+   Removed visits are left off. Prints only this record. */
+function printHistory(r){
+  if(!r) return;
+  const c = coverage(r);
+  const sec = latestSecondary(r);
+  const visits = (r.service || []).filter(s => !s.voided).slice().reverse();
+  const maint = (r.maintenance || []).filter(m => m.active !== false);
+  const kv = (k, v) => v ? `<tr><th>${esc(k)}</th><td>${v}</td></tr>` : "";
+  const html = `
+    <div class="ph">
+      <div class="ph-top"><b>MySolar — ${esc(t("Service history"))}</b>
+        <span>${esc(t("Printed"))} ${fmt(todayISO())}${USER?.email ? " · " + esc(USER.email) : ""}</span></div>
+      <table class="ph-kv">
+        ${kv(t("Warranty no"), esc(r.warrantyNo))}
+        ${kv(t("Model"), esc((c.model.brand ? c.model.brand + " · " : "") + c.model.name))}
+        ${kv(t("Serial number"), esc(r.serial || "—"))}
+        ${sec ? kv(t("Replacement tank S/N"), esc(sec.secondary) + " (" + fmt(sec.date) + ")") : ""}
+        ${kv(t("Installed"), fmt(r.installDate))}
+        ${c.model.guaranteeYears === 0 ? "" : kv(t("Guarantee ends"), fmt(c.gEnd))}
+        ${kv(t("Warranty ends"), fmt(c.wEnd))}
+        ${kv(t("Customer"), esc(r.name))}
+        ${kv(t("Phone"), esc(r.phone))}
+        ${kv(t("Installation address"), esc(r.address || "—"))}
+      </table>
+      ${maint.length ? `<h4>${esc(t("Maintenance schedule"))}</h4>
+        <table class="ph-t"><thead><tr><th>${esc(t("Task"))}</th><th>${esc(t("Next due"))}</th><th>${esc(t("Last done"))}</th></tr></thead><tbody>
+        ${maint.map(m => `<tr><td>${esc(LANG === "zh" && m.label_zh ? m.label_zh : String(m.label || "").replace(/ due$/i,""))}</td>
+          <td>${m.next_due_date ? fmt(m.next_due_date) : "—"}</td><td>${m.last_done_date ? fmt(m.last_done_date) : "—"}</td></tr>`).join("")}
+        </tbody></table>` : ""}
+      <h4>${esc(t("Service history"))} (${visits.length})</h4>
+      ${visits.length ? `<table class="ph-t"><thead><tr>
+          <th>${esc(t("Date"))}</th><th>${esc(t("Type"))}</th><th>${esc(t("Team"))}</th>
+          <th>${esc(t("Parts replaced"))}</th><th>${esc(t("Price charged"))}</th><th>${esc(t("Notes"))}</th></tr></thead><tbody>
+        ${visits.map(s => `<tr><td>${fmt(s.date)}</td><td>${esc(s.type)}${s.fault ? " (" + esc(t("Fault")) + ")" : ""}</td>
+          <td>${esc(s.tech || "—")}</td>
+          <td>${esc(s.parts || "—")}${s.secondary ? "<br>" + esc(t("Replacement tank S/N")) + ": " + esc(s.secondary) : ""}</td>
+          <td>${priceText(s)}</td><td>${esc(s.note || "")}</td></tr>`).join("")}
+        </tbody></table>` : `<p>${esc(t("No service visits recorded."))}</p>`}
+      <p class="ph-foot">${esc(t("Internal record — contains customer personal data. Do not leave it with anyone outside MySolar."))}</p>
+    </div>`;
+  let box = document.getElementById("printArea");
+  if(!box){ box = document.createElement("div"); box.id = "printArea"; document.body.appendChild(box); }
+  box.innerHTML = html;
+  document.body.classList.add("printing");
+  const done = () => { document.body.classList.remove("printing"); box.innerHTML = ""; window.removeEventListener("afterprint", done); };
+  window.addEventListener("afterprint", done);
+  window.print();
+}
+
 async function viewDetail(id){
   const r = await DataSource.getById(id);
   CURRENT_RECORD = r;
@@ -1440,14 +1558,15 @@ async function viewDetail(id){
         <dt>${t("Team")}</dt><dd>${esc(s.tech || "—")}</dd>
         <dt>${t("Parts replaced")}</dt><dd>${esc(s.parts || "—")}</dd>
         <dt>${t("Price charged")}</dt><dd>${priceText(s)}</dd>
+        ${s.secondary ? `<dt>${t("Replacement tank S/N")}</dt><dd class="mono">${esc(s.secondary)}</dd>` : ""}
         ${s.note ? `<dt>${t("Notes")}</dt><dd>${esc(s.note)}</dd>` : ""}
       </dl>
       ${s.voided
         ? `<div class="tiny" style="color:var(--grey);margin-top:6px">${t("Removed by")} ${esc(s.voidBy)} — ${esc(s.voidReason)}
-             <button class="lnk" data-restore style="margin-left:10px">${t("Restore")}</button></div>`
+             ${IS_ADMIN ? `<button class="lnk" data-restore style="margin-left:10px">${t("Restore")}</button>` : ""}</div>`
         : `<div class="tiny" style="margin-top:6px">
              <button class="lnk" data-edit>${t("Edit")}</button>
-             <button class="lnk" data-void>${t("Remove")}</button></div>`}
+             ${IS_ADMIN ? `<button class="lnk" data-void>${t("Remove")}</button>` : ""}</div>`}
     </div>`).join("")
     : `<div class="claim muted tiny">${t("No service visits recorded.")}</div>`;
 
@@ -1481,6 +1600,8 @@ async function viewDetail(id){
         <div class="field"><label for="sv_parts">${t("Parts replaced")}</label>
           <input id="sv_parts" placeholder="Leave blank if none"></div>
       </div>
+      <div class="field"><label for="sv_sn2">${t("Replacement tank S/N")}</label>
+        <input id="sv_sn2" class="mono" placeholder="${t("Only if the tank was replaced on this visit")}"></div>
       <div class="row2">
         <div class="field"><label for="sv_chg">${t("Chargeable")}</label>
           <select id="sv_chg"><option value="no">${t("No — under warranty")}</option>
@@ -1545,6 +1666,18 @@ async function viewDetail(id){
       </div></div>`
     : `<div style="margin-bottom:18px"><button class="btn btn-s" id="blOn"
          style="padding:7px 13px;font-size:.85rem">${t("Blacklist this customer")}</button></div>`}
+    ${r.voided ? `<div class="card" style="background:#EEF1F3;border-color:var(--line);margin-bottom:18px">
+      <div class="card-pad" style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:center">
+        <div><b>${t("This record has been removed")}</b>
+          <div class="tiny muted">${t("Removed by")} ${esc(r.voidedBy || "—")}${r.voidedAt ? " · " + fmt(String(r.voidedAt).slice(0,10)) : ""} — ${esc(r.voidedReason || "")}</div>
+          <div class="tiny muted">${t("It no longer appears in the registry, searches or reminders.")}</div></div>
+        ${IS_ADMIN ? `<button class="btn btn-s" id="recRestore">${t("Restore this record")}</button>` : ""}
+      </div></div>` : ""}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:-6px 0 18px">
+      <button class="btn btn-s" id="recPrint" style="padding:7px 13px;font-size:.85rem">${t("Print service history")}</button>
+      ${IS_ADMIN && !r.voided ? `<button class="btn btn-s" id="recRemove"
+         style="padding:7px 13px;font-size:.85rem;color:var(--red)">${t("Remove this record")}</button>` : ""}
+    </div>
     <div class="detail-grid">
       <div style="display:flex;flex-direction:column;gap:18px">
         <div class="card"><div class="sec-h">${t("Coverage")}</div>
@@ -1554,6 +1687,7 @@ async function viewDetail(id){
             <div class="barlbl"><span>${fmt(r.installDate)}</span><span>${fmt(c.wEnd)}</span></div></div>
           <dl class="kv" style="padding-top:6px">
             <dt>${t("Model")}</dt><dd>${esc(c.model.name)}</dd>
+            ${latestSecondary(r) ? `<dt>${t("Replacement tank S/N")}</dt><dd class="mono">${esc(latestSecondary(r).secondary)} <span class="tiny muted">(${fmt(latestSecondary(r).date)})</span></dd>` : ""}
             ${c.model.brand ? `<dt>${t("Brand")}</dt><dd>${esc(c.model.brand)}</dd>` : ""}
             ${c.model.category ? `<dt>${t("Category")}</dt><dd>${esc(c.model.category)}</dd>` : ""}
             <dt>${t("Installed")}</dt><dd>${fmt(r.installDate)}</dd>
@@ -1798,9 +1932,16 @@ const RULE_UNITS = {
 };
 
 async function viewSettings(){
-  const [allRules, settings, tasks] = await Promise.all([
-    DataSource.listRules(), DataSource.listSettings(), DataSource.listMaintenanceTasks()
+  const [allRules, settings, tasks, admins] = await Promise.all([
+    DataSource.listRules(), DataSource.listSettings(), DataSource.listMaintenanceTasks(),
+    DataSource.listAdmins().catch(() => [])
   ]);
+  const adminRows = admins.length
+    ? admins.map(a => `<tr data-admin="${esc(a.email)}"><td>${esc(a.email)}${
+        USER && String(USER.email||"").toLowerCase() === a.email ? ` <span class="pill n">${t("you")}</span>` : ""}</td>
+        <td class="tiny muted">${a.added_at ? fmt(String(a.added_at).slice(0,10)) : ""}</td>
+        <td style="width:110px">${IS_ADMIN ? `<button class="btn btn-s" data-unadmin style="padding:6px 12px;font-size:.85rem">${t("Remove")}</button>` : ""}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="tiny muted">${t("No admins yet. The first admin is added once in the database.")}</td></tr>`;
 
   /* Maintenance reminders get their own section below, so they are not also
      listed here — one setting in two places is how they end up disagreeing. */
@@ -1886,6 +2027,17 @@ async function viewSettings(){
       </div>
     </div>
 
+    <div class="card" style="margin-bottom:22px">
+      <div class="sec-h">${t("Admins")}</div>
+      <div class="card-pad" style="padding-bottom:0"><p class="tiny muted" style="margin:0">
+        ${t("Only admins can remove incorrect records and service visits, restore them, and change this list.")}</p></div>
+      <div class="tablewrap" style="border:0;border-radius:0"><table>
+        <tbody id="adminBody">${adminRows}</tbody></table></div>
+      ${IS_ADMIN ? `<div class="card-pad" style="border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap">
+        <input id="newAdmin" type="email" placeholder="${t("Staff login email")}" style="flex:1;min-width:200px">
+        <button class="btn btn-p" id="addAdmin">${t("Make admin")}</button></div>` : ""}
+    </div>
+
     <div class="card">
       <div class="sec-h">${t("Blacklist & payments")}</div>
       <div class="tablewrap" style="border:0;border-radius:0"><table>
@@ -1899,6 +2051,20 @@ async function viewSettings(){
 }
 
 function wireSettings(){
+  const adminMsg = (html) => { const m = $("#setMsg"); if(m) m.innerHTML = html; };
+  const addA = $("#addAdmin");
+  if(addA) addA.onclick = async () => {
+    const em = ($("#newAdmin").value || "").trim();
+    if(!em) return;
+    try { await DataSource.setAdmin(em, true); await refreshAdmin(); render(); }
+    catch(e){ adminMsg(`<div class="err">${esc(e.message || e)}</div>`); }
+  };
+  document.querySelectorAll("[data-admin] [data-unadmin]").forEach(b => b.onclick = async () => {
+    const em = b.closest("[data-admin]").dataset.admin;
+    if(!confirm(t("Remove admin rights from") + " " + em + "?")) return;
+    try { await DataSource.setAdmin(em, false); await refreshAdmin(); render(); }
+    catch(e){ adminMsg(`<div class="err">${esc(e.message || e)}</div>`); }
+  });
   const msg = (html) => { $("#setMsg").innerHTML = html;
     setTimeout(() => { const m = $("#setMsg"); if(m) m.innerHTML = ""; }, 4000); };
 
@@ -2201,7 +2367,7 @@ async function render(){
         const res = await DataSource.signIn($("#em").value.trim(), $("#pw").value);
         btn.disabled = false; btn.textContent = t("Sign in");
         if(res.ok){
-          USER = res.user; AUTH_MSG = "";
+          USER = res.user; AUTH_MSG = ""; await refreshAdmin();
           stamp(Date.now()); setSessionStart(Date.now()); startSessionGuard();
           FU_COUNT = await DataSource.countFollowups();
           location.hash = "#/admin/list"; render();
@@ -2439,6 +2605,22 @@ async function render(){
         if(bOn)  bOn.onclick  = () => doBl(true);
         if(bOff) bOff.onclick = () => doBl(false);
 
+        const pBtn = $("#recPrint");
+        if(pBtn) pBtn.onclick = () => printHistory(CURRENT_RECORD);
+        const rmBtn = $("#recRemove");
+        if(rmBtn) rmBtn.onclick = async () => {
+          const reason = prompt(t("Why is this record being removed? It can be restored later by an admin."));
+          if(reason === null) return;
+          if(reason.trim().length < 3){ alert(t("A reason is required.")); return; }
+          try { await DataSource.removeInstallation(m[1], reason.trim()); render(); }
+          catch(e){ alert(e.message || e); }
+        };
+        const rsBtn = $("#recRestore");
+        if(rsBtn) rsBtn.onclick = async () => {
+          try { await DataSource.restoreInstallation(m[1]); render(); }
+          catch(e){ alert(e.message || e); }
+        };
+
         /* Edit / remove / restore on each visit row.
            Removing is a soft delete — the record stays, greyed out, with the
            reason. Voided visits stop counting toward the repeat-repair alert
@@ -2457,6 +2639,7 @@ async function render(){
             setVisitType(v);
             $("#sv_tech").value  = v.tech || "";
             $("#sv_parts").value = v.parts || "";
+            if($("#sv_sn2")) $("#sv_sn2").value = v.secondary || "";
             $("#sv_chg").value   = v.chargeable ? "yes" : "no";
             $("#sv_amt").value   = v.amount ?? "";
             syncPay();
@@ -2528,7 +2711,8 @@ async function render(){
                 dueOn: $("#sv_due") ? $("#sv_due").value : null,
                 amountPaid: $("#sv_paid") ? $("#sv_paid").value : null,
                 paidOn: $("#sv_paidon") ? $("#sv_paidon").value : null,
-                note: $("#sv_note").value.trim()
+                note: $("#sv_note").value.trim(),
+                secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : ""
               });
               render();
               return;
@@ -2543,7 +2727,8 @@ async function render(){
               amount: $("#sv_amt").value,
               payStatus: $("#sv_pay") ? $("#sv_pay").value : "unpaid",
               dueOn: $("#sv_due") ? $("#sv_due").value : null,
-              note:  $("#sv_note").value.trim()
+              note:  $("#sv_note").value.trim(),
+              secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : ""
             });
 
             /* The whole point of the feature: the moment a unit crosses the
@@ -2684,6 +2869,7 @@ async function loadModels(){
       return;
     }
     startSessionGuard();
+    await refreshAdmin();
     try { FU_COUNT = await DataSource.countFollowups(); } catch(e) { FU_COUNT = 0; }
   }
   render();
