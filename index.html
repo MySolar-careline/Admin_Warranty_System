@@ -38,6 +38,13 @@ button{font-family:inherit}
 .navbtns a:hover,.navbtns button:hover{background:rgba(255,255,255,.1);color:#fff}
 .navbtns a.on{background:var(--blue);color:#fff}
 #langBtn{border:1px solid rgba(255,255,255,.3);border-radius:4px;font-size:.8rem;padding:5px 11px}
+/* Phones: the six signed-in buttons were wider than the screen, which made
+   the browser zoom every page out. Let them wrap onto a second line. */
+@media(max-width:600px){
+  .topnav .in{padding:10px 14px}
+  .navbtns{flex-wrap:wrap;gap:4px;width:100%}
+  .navbtns a,.navbtns button{padding:6px 9px;font-size:.84rem}
+}
 
 .page{max-width:1240px;margin:0 auto;padding:26px 22px 60px}
 .narrow{max-width:620px}
@@ -172,6 +179,9 @@ tbody tr.row-bl td b{color:var(--red)}
 .tab.on{background:var(--blue);border-color:var(--blue);color:#fff}
 .tabn{background:rgba(0,0,0,.12);border-radius:99px;padding:1px 7px;font-size:.78rem}
 .tab.on .tabn{background:rgba(255,255,255,.25)}
+.svc-kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;margin:6px 0 0;font-size:.85rem}
+.svc-kv dt{color:var(--grey)}
+.svc-kv dd{margin:0;overflow-wrap:anywhere}
 .idlewarn{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:200;
   background:var(--ink);color:#fff;padding:13px 18px;border-radius:6px;font-size:.92rem;
   box-shadow:0 10px 30px rgba(0,0,0,.3);display:flex;align-items:center;max-width:92vw}
@@ -648,7 +658,13 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under warranty":"保修期内","Brand":"品牌","Category":"类别","Warranty note":"保修说明","Open claims":"未结索赔",
+  "Under warranty":"保修期内","Team":"负责团队","Price charged":"收费","No charge":"免费",
+  "Chargeable — amount not entered":"需收费（未填金额）","owed":"尚欠","Notes":"备注",
+  "Team or technician who attended":"上门的团队或技术人员",
+  "Blacklisted customer":"黑名单客户","is on the blacklist.":"已被列入黑名单。","Reason":"原因",
+  "No reason recorded":"未记录原因","Outstanding":"未付金额",
+  "Check with the owners before booking any job for this customer.":"为此客户安排任何工作前，请先与老板确认。",
+  "I understand":"我知道了","Brand":"品牌","Category":"类别","Warranty note":"保修说明","Open claims":"未结索赔",
   "Repeat repairs":"重复维修","Unpaid visits":"未付款","Expired":"已过期",
   "Search":"搜索","Status":"状态","Sold via":"来源","Repairs":"维修次数",
   "All":"全部","Direct":"直销","Dealer":"经销商","Customer":"客户",
@@ -717,7 +733,7 @@ const ZH = {
   "All systems":"全部系统","Repeated repairs":"重复维修","Owe money":"欠款客户",
   "Out of warranty":"已过保修","More filters":"更多筛选","Clear all":"清除",
   "Warranty status":"保修状态","Customers & Systems":"客户与系统",
-  "Search name, phone, warranty number…":"搜索姓名、电话、保修号…",
+  "Search name, phone, warranty no., serial no., area or dealer…":"搜索姓名、电话、保修号、机身号、地区或经销商…",
   "Previous":"上一页","Next":"下一页","Page":"第","Showing":"显示","of":"／共",
   "1 or more":"1次以上","2 or more (flagged)":"2次以上（已标记）",
   "No installations registered yet.":"还没有登记任何安装记录。",
@@ -1245,7 +1261,7 @@ async function viewList(){
     </div>
 
     <div class="searchbar">
-      <input id="q" placeholder="${t("Search name, phone, warranty number…")}" value="${esc(FILTER.q)}">
+      <input id="q" placeholder="${t("Search name, phone, warranty no., serial no., area or dealer…")}" value="${esc(FILTER.q)}">
       <button class="btn btn-s" id="fToggle">${t("More filters")}${
         (FILTER.status!=="all"||FILTER.channel!=="all"||FILTER.faults!=="all"||FILTER.pay!=="all")
           ? ' <span class="dot"></span>' : ""}</button>
@@ -1351,6 +1367,18 @@ function maintCard(r){
   </div>`;
 }
 
+/* "Price charged" as staff read it on a service call: the amount, and what
+   is still owed when it is not settled. */
+function priceText(s){
+  if(!s.chargeable) return t("No charge");
+  const amt = Number(s.amount);
+  const money = v => "RM " + Number(v).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if(s.amount == null || s.amount === "" || isNaN(amt)) return t("Chargeable — amount not entered");
+  if(s.payStatus === "partial" && s.amountPaid != null && !isNaN(Number(s.amountPaid)))
+    return `${money(amt)} · ${t("paid")} ${money(s.amountPaid)} · ${t("owed")} ${money(Math.max(amt - Number(s.amountPaid), 0))}`;
+  return money(amt);
+}
+
 async function viewDetail(id){
   const r = await DataSource.getById(id);
   CURRENT_RECORD = r;
@@ -1369,12 +1397,16 @@ async function viewDetail(id){
         ${s.chargeable ? `<span class="pill ${
             s.payStatus === "paid" ? "g" :
             (s.dueOn && new Date(s.dueOn+"T00:00:00") < new Date()) ? "x" : "a"
-          }">RM ${esc(s.amount ?? "—")} ${
+          }">${
             s.payStatus === "paid" ? t("paid") :
             s.payStatus === "partial" ? t("part paid") : t("unpaid")}</span>` : ''}
         <span class="src">${fmt(s.date)}</span></span></div>
-      <div class="muted tiny">${esc(s.tech || "—")}${s.note ? " — " + esc(s.note) : ""}</div>
-      ${s.parts ? `<div class="muted tiny">${t("Parts")}: ${esc(s.parts)}</div>` : ""}
+      <dl class="svc-kv">
+        <dt>${t("Team")}</dt><dd>${esc(s.tech || "—")}</dd>
+        <dt>${t("Parts replaced")}</dt><dd>${esc(s.parts || "—")}</dd>
+        <dt>${t("Price charged")}</dt><dd>${priceText(s)}</dd>
+        ${s.note ? `<dt>${t("Notes")}</dt><dd>${esc(s.note)}</dd>` : ""}
+      </dl>
       ${s.voided
         ? `<div class="tiny" style="color:var(--grey);margin-top:6px">${t("Removed by")} ${esc(s.voidBy)} — ${esc(s.voidReason)}
              <button class="lnk" data-restore style="margin-left:10px">${t("Restore")}</button></div>`
@@ -1409,8 +1441,8 @@ async function viewDetail(id){
           <select id="sv_type">${visitOpts}</select></div>
       </div>
       <div class="row2">
-        <div class="field"><label for="sv_tech">${t("Technician")}</label>
-          <input id="sv_tech" placeholder="Name of who attended"></div>
+        <div class="field"><label for="sv_tech">${t("Team")}</label>
+          <input id="sv_tech" placeholder="${t("Team or technician who attended")}"></div>
         <div class="field"><label for="sv_parts">${t("Parts replaced")}</label>
           <input id="sv_parts" placeholder="Leave blank if none"></div>
       </div>
@@ -1889,7 +1921,7 @@ const WA_TEMPLATES = {
   maint_anode: r =>
     `Hi ${r.customer_name}, this is MySolar. The anode on your solar water heater (${r.warranty_no}) is due for replacement. Replacing it on time is what keeps the tank from corroding. Would you like us to arrange a visit?`,
   maint_nrv: r =>
-    `Hi ${r.customer_name}, this is MySolar. The non-return valve on your system (${r.warranty_no}) is due for replacement. Would you like us to arrange a visit?`,
+    `Hi ${r.customer_name}, this is MySolar. The check valve on your system (${r.warranty_no}) is due for servicing. Would you like us to arrange a visit?`,
   maint_flush: r =>
     `Hi ${r.customer_name}, this is MySolar. Your solar water heater (${r.warranty_no}) is due for flushing. This clears out sediment and keeps the system heating efficiently. Would you like us to arrange a visit?`,
   maint_backwash: r =>
@@ -2061,8 +2093,46 @@ function showConfigWarning(){
      </div>`;
 }
 
+/* A pop-up, not just the red banner, so nobody books a job for a
+   blacklisted customer without seeing it. Shown once each time the record
+   is opened — not again every time the page refreshes after a save. */
+let BL_POPUP_FOR = null;
+function blacklistPopup(r){
+  if(!r || !r.blacklisted || String(BL_POPUP_FOR) === String(r.id)) return;
+  BL_POPUP_FOR = r.id;
+  const old = document.getElementById("blPop"); if(old) old.remove();
+  const owed = r.custUnpaidAmount > 0
+    ? `<p style="margin:8px 0 0">${t("Outstanding")}: <b>RM ${Number(r.custUnpaidAmount).toLocaleString("en-MY",{minimumFractionDigits:2,maximumFractionDigits:2})}</b></p>` : "";
+  const d = document.createElement("div");
+  d.id = "blPop";
+  d.setAttribute("role", "alertdialog");
+  d.setAttribute("aria-modal", "true");
+  d.setAttribute("aria-labelledby", "blPopT");
+  d.style.cssText = "position:fixed;inset:0;z-index:300;background:rgba(10,43,56,.55);display:flex;align-items:center;justify-content:center;padding:16px";
+  d.innerHTML = `<div class="card" style="max-width:420px;width:100%;border-top:6px solid var(--red)">
+      <div class="card-pad">
+        <h3 id="blPopT" style="color:var(--red);margin-bottom:8px">${t("Blacklisted customer")}</h3>
+        <p style="margin:0"><b>${esc(r.name || "")}</b> ${t("is on the blacklist.")}</p>
+        <p style="margin:8px 0 0">${t("Reason")}: ${esc(r.blacklistReason || t("No reason recorded"))}</p>
+        ${owed}
+        <p class="tiny muted" style="margin:12px 0 0">${t("Check with the owners before booking any job for this customer.")}</p>
+        <button class="btn btn-p btn-full" id="blPopOk" style="margin-top:16px">${t("I understand")}</button>
+      </div></div>`;
+  document.body.appendChild(d);
+  const close = () => { d.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = e => { if(e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  d.querySelector("#blPopOk").onclick = close;
+  d.querySelector("#blPopOk").focus();
+}
+
 async function render(){
   nav();
+  /* Leaving the record means the next visit to it shows the pop-up again. */
+  if(!/^#\/admin\/\d+$/.test(route())){
+    BL_POPUP_FOR = null;
+    const p = document.getElementById("blPop"); if(p) p.remove();
+  }
   showConfigWarning();
   const r = route(), app = $("#app");
 
@@ -2167,6 +2237,7 @@ async function render(){
       const m = r.match(/^#\/admin\/(\d+)$/);
       if(m){
         app.innerHTML = await viewDetail(m[1]);
+        blacklistPopup(CURRENT_RECORD);
         const btn = $("#addSvc");
         const panel = $("#svcPanel");
         if(btn && panel) btn.onclick = () => {
