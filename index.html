@@ -248,6 +248,11 @@ const NOTIFY_SECRET = "mysolar-notify-7fk29x";   /* <-- must match NOTIFY_SECRET
    warning instead, so a forgotten paste can never go unnoticed again. */
 const NOTIFY_READY = !!NOTIFY_URL && NOTIFY_SECRET !== "PASTE_YOUR_NOTIFY_SECRET_HERE";
 
+/* Leave EMPTY on the live site. On the staging (test) copy set it to
+   "STAGING" — every screen then shows a red bar, so the test copy can never
+   be mistaken for the real system. */
+const ENV_LABEL = "";
+
 /* Dates, in Malaysian time rather than UTC.
    toISOString() is UTC, and Malaysia is eight hours ahead — so before 8am it
    returns YESTERDAY. Every default date in this app goes through here. */
@@ -643,7 +648,7 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under tank warranty":"水箱保修期内","Open claims":"未结索赔",
+  "Under warranty":"保修期内","Brand":"品牌","Category":"类别","Warranty note":"保修说明","Open claims":"未结索赔",
   "Repeat repairs":"重复维修","Unpaid visits":"未付款","Expired":"已过期",
   "Search":"搜索","Status":"状态","Sold via":"来源","Repairs":"维修次数",
   "All":"全部","Direct":"直销","Dealer":"经销商","Customer":"客户",
@@ -706,8 +711,8 @@ const ZH = {
   "Installed by":"安装人员","Service history":"维修记录","Staff sign in":"员工登入",
   "No — under warranty":"否 — 保修内","Yes — customer charged":"是 — 向客户收费",
   "Not paid yet":"尚未付款","Partly paid":"部分付款","Paid in full":"已付清",
-  "Guarantee":"保证期","Tank warranty":"保修期","Guarantee ends":"保证期至",
-  "Tank warranty ends":"保修期至","yr":"年","Stay signed in":"保持登入",
+  "Guarantee":"保证期","Warranty":"保修期","Guarantee ends":"保证期至",
+  "Warranty ends":"保修期至","yr":"年","Stay signed in":"保持登入",
   "Signing you out shortly for security.":"为了安全，系统即将自动登出。",
   "All systems":"全部系统","Repeated repairs":"重复维修","Owe money":"欠款客户",
   "Out of warranty":"已过保修","More filters":"更多筛选","Clear all":"清除",
@@ -872,7 +877,7 @@ function coverage(row){
   let state,label,cls;
   if(row.voided){ state="voided"; label="Removed"; cls="n"; }
   else if(now<gEnd){ state="guarantee"; label="Under guarantee"; cls="g"; }
-  else if(now<wEnd){ state="warranty"; label="Under tank warranty"; cls="w"; }
+  else if(now<wEnd){ state="warranty"; label="Under warranty"; cls="w"; }
   else { state="expired"; label="Expired"; cls="x"; }
   const total = daysBetween(start,wEnd);
   const gone = Math.min(Math.max(daysBetween(start,now),0),total);
@@ -1152,11 +1157,11 @@ function customerCard(row){
     </div>
     <dl class="kv">
       <dt>${t("Registered to")}</dt><dd>${esc(row.name)}</dd>
-      <dt>${t("Capacity")}</dt><dd>${c.model.litres} L · ${c.model.gallons} gal</dd>
+      <dt>${t("Model")}</dt><dd>${esc(c.model.name)}</dd>
       <dt>${t("Serial number")}</dt><dd>${esc(row.serial||"—")}</dd>
       <dt>${t("Installed")}</dt><dd>${fmt(row.installDate)}</dd>
-      <dt>${t("Guarantee")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>
-      <dt>${t("Tank warranty")}${c.model.warrantyYears ? ` (${c.model.warrantyYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.wEnd)}</dd>
+      ${c.model.guaranteeYears === 0 ? "" : `<dt>${t("Guarantee")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>`}
+      <dt>${t("Warranty")}${c.model.warrantyYears ? ` (${c.model.warrantyYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.wEnd)}</dd>
     </dl>
     <div class="svc"><h3 style="margin-bottom:9px">${t("Service history")}</h3>${svc}</div>
     <div class="card-pad" style="border-top:1px solid var(--line)">
@@ -1249,7 +1254,7 @@ async function viewList(){
     <div class="filters ${FILTERS_OPEN ? "show" : ""}">
       <div class="field"><label for="fs">${t("Warranty status")}</label>
         <select id="fs"><option value="all">${t("All")}</option><option value="guarantee">${t("Under guarantee")}</option>
-        <option value="warranty">${t("Under tank warranty")}</option><option value="expired">${t("Expired")}</option></select></div>
+        <option value="warranty">${t("Under warranty")}</option><option value="expired">${t("Expired")}</option></select></div>
       <div class="field"><label for="fc">${t("Sold via")}</label>
         <select id="fc"><option value="all">${t("All")}</option><option value="direct">${t("Direct")}</option>
         <option value="dealer">${t("Dealer")}</option></select></div>
@@ -1482,13 +1487,13 @@ async function viewDetail(id){
             <div class="barlbl"><span>${fmt(r.installDate)}</span><span>${fmt(c.wEnd)}</span></div></div>
           <dl class="kv" style="padding-top:6px">
             <dt>${t("Model")}</dt><dd>${esc(c.model.name)}</dd>
-            <dt>${t("Capacity")}</dt><dd>${c.model.litres} L · ${c.model.gallons} gal · ${esc(paxText(c.model.pax))}</dd>
-            <dt>${t("Tank steel")}</dt><dd>${esc(c.model.steel)}</dd>
-            <dt>${t("Copper tubes / panel")}</dt><dd>${c.model.tubes} · ${esc(c.model.panel)}</dd>
+            ${c.model.brand ? `<dt>${t("Brand")}</dt><dd>${esc(c.model.brand)}</dd>` : ""}
+            ${c.model.category ? `<dt>${t("Category")}</dt><dd>${esc(c.model.category)}</dd>` : ""}
             <dt>${t("Installed")}</dt><dd>${fmt(r.installDate)}</dd>
-            <dt>${t("Guarantee ends")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>
-            <dt>${t("Tank warranty ends")}${c.model.warrantyYears ? ` (${c.model.warrantyYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.wEnd)}</dd>
-          </dl></div>
+            ${c.model.guaranteeYears === 0 ? "" : `<dt>${t("Guarantee ends")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>`}
+            <dt>${t("Warranty ends")}${c.model.warrantyYears ? ` (${c.model.warrantyYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.wEnd)}</dd>
+          </dl>
+          ${c.model.note ? `<div class="tiny muted" style="padding:0 18px 14px">${t("Warranty note")}: ${esc(c.model.note)}</div>` : ""}</div>
         <div class="card"><div class="sec-h">
           <span>${t("Service history")}${faults.length ? ` <span class="pill ${repeatFlag?"x":"a"}">${faults.length} fault${faults.length===1?"":"s"} / ${REPEAT_WINDOW_MONTHS}mth</span>` : ""}</span>
           <button class="btn btn-s" style="padding:6px 12px;font-size:.85rem" id="addSvc">${t("Log a visit")}</button></div>
@@ -1519,8 +1524,21 @@ async function viewDetail(id){
 }
 
 function viewNew(){
-  const opts = Object.entries(MODELS)
-    .map(([k,m]) => `<option value="${k}">${m.name} — ${m.gallons} gal</option>`).join("");
+  /* Active products only, grouped by category, in the order of MySolar's
+     Products Range file. Each line shows the terms staff are registering. */
+  const groups = {};
+  Object.entries(MODELS)
+    .filter(([k,m]) => m.active !== false)
+    .sort((a,b) => (a[1].sortOrder ?? 999) - (b[1].sortOrder ?? 999) || a[0].localeCompare(b[0]))
+    .forEach(([k,m]) => { (groups[m.category || ""] = groups[m.category || ""] || []).push([k,m]); });
+  const termText = m => (Number(m.guaranteeYears) > 0
+      ? `${m.guaranteeYears} ${t("yr")} ${t("Guarantee")} + ${m.warrantyYears} ${t("yr")} ${t("Warranty")}`
+      : `${m.warrantyYears} ${t("yr")} ${t("Warranty")}`);
+  const optLine = ([k,m]) =>
+    `<option value="${esc(k)}">${esc((m.brand ? m.brand + " · " : "") + m.name)} — ${esc(termText(m))}</option>`;
+  const opts = Object.entries(groups).map(([cat, list]) => cat
+      ? `<optgroup label="${esc(cat)}">${list.map(optLine).join("")}</optgroup>`
+      : list.map(optLine).join("")).join("");
   return `<div class="page narrow">
     <button class="crumb" onclick="location.hash='#/admin/list'">&larr; ${t("Back to registry")}</button>
     <div class="card card-pad">
@@ -2029,8 +2047,13 @@ function wireFollowups(){
 function showConfigWarning(){
   const box = document.getElementById("cfgWarn");
   if(!box) return;
-  if(NOTIFY_READY || !USER){ box.innerHTML = ""; return; }
-  box.innerHTML =
+  const envBar = ENV_LABEL
+    ? `<div style="background:var(--red);color:#fff;text-align:center;padding:6px 12px;
+                   font-family:var(--sans);font-weight:700;letter-spacing:.08em;font-size:.82rem">
+         ${esc(ENV_LABEL)} — TEST COPY, NOT THE REAL SYSTEM</div>`
+    : "";
+  if(NOTIFY_READY || !USER || ENV_LABEL){ box.innerHTML = envBar; return; }
+  box.innerHTML = envBar +
     `<div style="background:var(--amber-bg);border-bottom:1px solid #EFD9AE;
                  padding:10px 18px;font-family:var(--body);font-size:.88rem;color:var(--amber)">
        <b>${t("Email alerts are switched off.")}</b>
@@ -2493,13 +2516,15 @@ async function render(){
    and breaks the registry page. */
 async function loadModels(){
   try{
-    const { data } = await sb.from("models").select("*").eq("active", true).order("code");
+    const { data } = await sb.from("models").select("*").order("code");
     (data || []).forEach(m => {
       MODELS[m.code] = {
         name: m.name, litres: m.litres, gallons: m.gallons, pax: m.pax || "\u2014",
         guaranteeYears: m.guarantee_years, warrantyYears: m.warranty_years,
         steel: m.steel || "\u2014", tubes: m.copper_tubes || "\u2014",
-        panel: m.panel_size || "\u2014"
+        panel: m.panel_size || "\u2014",
+        brand: m.brand || "", category: m.category || "", kind: m.kind || "heater",
+        sortOrder: m.sort_order, note: m.warranty_note || "", active: m.active !== false
       };
     });
   }catch(e){ /* keep the built-in list */ }
