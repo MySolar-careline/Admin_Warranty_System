@@ -179,6 +179,8 @@ tbody tr.row-bl td b{color:var(--red)}
 .tab.on{background:var(--blue);border-color:var(--blue);color:#fff}
 .tabn{background:rgba(0,0,0,.12);border-radius:99px;padding:1px 7px;font-size:.78rem}
 .tab.on .tabn{background:rgba(255,255,255,.25)}
+fieldset.addr{border:1px solid var(--line);border-radius:7px;padding:10px 14px 4px;margin:0 0 14px}
+fieldset.addr legend{font-size:.82rem;font-weight:600;color:var(--grey);padding:0 6px}
 .svc-kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;margin:6px 0 0;font-size:.85rem}
 .svc-kv dt{color:var(--grey)}
 .svc-kv dd{margin:0;overflow-wrap:anywhere}
@@ -278,7 +280,30 @@ function inDaysISO(n){
 /* Fields a person may have typed into. Checked before anything that rebuilds
    the page, so a half-written note is never thrown away without asking. */
 const DRAFT_FIELDS = ["sv_note","sv_tech","sv_parts","sv_amt",
-                      "n_name","n_phone","n_addr","n_area","n_serial","wn","pn"];
+                      "n_name","n_phone","n_addr1","n_addr2","n_postcode","n_area","n_serial","wn","pn"];
+
+/* Malaysian states and federal territories, as stored in the database. */
+const MY_STATES = ["Johor","Kedah","Kelantan","Melaka","Negeri Sembilan","Pahang","Perak","Perlis",
+  "Pulau Pinang","Sabah","Sarawak","Selangor","Terengganu",
+  "W.P. Kuala Lumpur","W.P. Labuan","W.P. Putrajaya"];
+
+/* Same rules as normalize_phone() in the database (file 26), so staff see the
+   saved format as soon as they leave the box. The database has the final say. */
+function normalizePhone(p){
+  const raw = String(p || "").trim();
+  let d = raw.replace(/\D/g, "");
+  if(!d) return null;
+  if(d.startsWith("0060")) d = "0" + d.slice(4);
+  else if(d.startsWith("60") && d.length >= 10 && d.length <= 12) d = "0" + d.slice(2);
+  else if(raw.startsWith("+")) return (d.length >= 8 && d.length <= 15) ? "+" + d : null;
+  let m;
+  if((m = d.match(/^(011)(\d{4})(\d{4})$/)))        return `${m[1]}-${m[2]} ${m[3]}`;
+  if((m = d.match(/^(01[02-9])(\d{3})(\d{4})$/)))   return `${m[1]}-${m[2]} ${m[3]}`;
+  if((m = d.match(/^(03)(\d{4})(\d{4})$/)))         return `${m[1]}-${m[2]} ${m[3]}`;
+  if((m = d.match(/^(08[2-9])(\d{3})(\d{3})$/)))    return `${m[1]}-${m[2]} ${m[3]}`;
+  if((m = d.match(/^(0[4-9])(\d{3})(\d{4})$/)))     return `${m[1]}-${m[2]} ${m[3]}`;
+  return null;
+}
 function draftInProgress(){
   return DRAFT_FIELDS.some(id => {
     const el = document.getElementById(id);
@@ -310,7 +335,8 @@ function rowFromView(v, service = [], claims = []) {
   return {
     id: v.id, warrantyNo: v.warranty_no, serial: v.serial_no || "",
     model: v.model_code, name: v.customer_name, phone: v.customer_phone,
-    email: v.customer_email || "", address: v.address || "", area: v.customer_area || "",
+    email: v.customer_email || "", address: v.site_address || v.address || "",
+    area: v.site_area || v.customer_area || "",
     installDate: v.install_date, channel: v.channel,
     dealer: v.dealer_name || "", installer: v.installer || "",
     modelName: v.model_name || "",
@@ -458,7 +484,10 @@ const DataSource = {
   async createWarranty(p){
     const { data, error } = await sb.rpc("register_installation", {
       p_name:p.name, p_phone:p.phone, p_email:p.email || null,
-      p_address:p.address || null, p_area:p.area || null,
+      p_address:null, p_area:p.area || null,
+      p_site_address1:p.address1 || null, p_site_address2:p.address2 || null,
+      p_site_area:p.area || null, p_site_state:p.state || null,
+      p_site_postcode:p.postcode || null,
       p_model_code:p.model, p_serial_no:p.serial || null,
       p_install_date:p.installDate, p_channel:p.channel,
       p_dealer_name:p.dealer || null, p_installer:p.installer || null,
@@ -658,7 +687,13 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under warranty":"保修期内","Team":"负责团队","Price charged":"收费","No charge":"免费",
+  "Under warranty":"保修期内","Installation site address":"安装地点地址","Address 1":"地址 1",
+  "Address 2 (optional)":"地址 2（可选）","Postcode":"邮区编号","State":"州属","Choose state":"选择州属",
+  "e.g. No. 12, Jalan SS2/1":"例：No. 12, Jalan SS2/1","e.g. Taman Bahagia":"例：Taman Bahagia",
+  "Please enter a valid phone number, for example 012-345 6789. For a number outside Malaysia, start with +":"请输入有效的电话号码，例如 012-345 6789。马来西亚以外的号码请以 + 开头",
+  "Address 1 of the installation site is required.":"必须填写安装地点的地址 1。",
+  "Postcode must be 5 digits.":"邮区编号必须是 5 位数字。",
+  "Search name, phone, warranty no., serial no., address, area or dealer…":"搜索姓名、电话、保修号、机身号、地址、地区或经销商…","Team":"负责团队","Price charged":"收费","No charge":"免费",
   "Chargeable — amount not entered":"需收费（未填金额）","owed":"尚欠","Notes":"备注",
   "Team or technician who attended":"上门的团队或技术人员",
   "Blacklisted customer":"黑名单客户","is on the blacklist.":"已被列入黑名单。","Reason":"原因",
@@ -1261,7 +1296,7 @@ async function viewList(){
     </div>
 
     <div class="searchbar">
-      <input id="q" placeholder="${t("Search name, phone, warranty no., serial no., area or dealer…")}" value="${esc(FILTER.q)}">
+      <input id="q" placeholder="${t("Search name, phone, warranty no., serial no., address, area or dealer…")}" value="${esc(FILTER.q)}">
       <button class="btn btn-s" id="fToggle">${t("More filters")}${
         (FILTER.status!=="all"||FILTER.channel!=="all"||FILTER.faults!=="all"||FILTER.pay!=="all")
           ? ' <span class="dot"></span>' : ""}</button>
@@ -1590,10 +1625,22 @@ function viewNew(){
       <div class="row2">
         <div class="field"><label for="n_phone">${t("Phone")}</label><input id="n_phone" placeholder="012-345 6789"></div>
         <div class="field"><label for="n_email">${t("Email (optional)")}</label><input id="n_email"></div></div>
-      <div class="field"><label for="n_addr">${t("Installation address")}</label><input id="n_addr"></div>
-      <div class="row2">
-        <div class="field"><label for="n_area">${t("Area")}</label><input id="n_area" placeholder="Puchong"></div>
-        <div class="field"><label for="n_date">${t("Install date")}</label><input id="n_date" type="date"></div></div>
+      <fieldset class="addr">
+        <legend>${t("Installation site address")}</legend>
+        <div class="field"><label for="n_addr1">${t("Address 1")}</label>
+          <input id="n_addr1" autocomplete="address-line1" placeholder="${t("e.g. No. 12, Jalan SS2/1")}"></div>
+        <div class="field"><label for="n_addr2">${t("Address 2 (optional)")}</label>
+          <input id="n_addr2" autocomplete="address-line2" placeholder="${t("e.g. Taman Bahagia")}"></div>
+        <div class="row2">
+          <div class="field"><label for="n_postcode">${t("Postcode")}</label>
+            <input id="n_postcode" inputmode="numeric" autocomplete="postal-code" placeholder="47300"></div>
+          <div class="field"><label for="n_area">${t("Area")}</label>
+            <input id="n_area" autocomplete="address-level2" placeholder="Petaling Jaya"></div></div>
+        <div class="field"><label for="n_state">${t("State")}</label>
+          <select id="n_state"><option value="">${t("Choose state")}</option>${
+            MY_STATES.map(st => `<option value="${esc(st)}"${st==="Selangor"?" selected":""}>${esc(st)}</option>`).join("")}</select></div>
+      </fieldset>
+      <div class="field" style="max-width:260px"><label for="n_date">${t("Install date")}</label><input id="n_date" type="date"></div>
       <div class="row2">
         <div class="field"><label for="n_model">${t("Model")}</label><select id="n_model">${opts}</select></div>
         <div class="field"><label for="n_serial">${t("Serial number")}</label><input id="n_serial" placeholder="Optional"></div></div>
@@ -2193,6 +2240,10 @@ async function render(){
           $("#n_histnote").style.display   = on ? "" : "none";
         };
         hist.onchange = syncHist; syncHist();
+        const ph = $("#n_phone");
+        ph.addEventListener("blur", () => { const f = normalizePhone(ph.value); if(f) ph.value = f; });
+        const pc = $("#n_postcode");
+        pc.addEventListener("input", () => { pc.value = pc.value.replace(/\D/g, "").slice(0, 5); });
 
         $("#nGo").onclick = async () => {
           const v = id => $("#"+id).value.trim();
@@ -2200,14 +2251,24 @@ async function render(){
           if(!v("n_name") || !v("n_phone") || !v("n_date")){
             $("#nErr").innerHTML = `<div class="err">${t("Name, phone and install date are required.")}</div>`; return;
           }
+          if(!normalizePhone(v("n_phone"))){
+            $("#nErr").innerHTML = `<div class="err">${t("Please enter a valid phone number, for example 012-345 6789. For a number outside Malaysia, start with +")}</div>`; return;
+          }
+          if(!isHist && !v("n_addr1")){
+            $("#nErr").innerHTML = `<div class="err">${t("Address 1 of the installation site is required.")}</div>`; return;
+          }
+          if(v("n_postcode") && !/^\d{5}$/.test(v("n_postcode"))){
+            $("#nErr").innerHTML = `<div class="err">${t("Postcode must be 5 digits.")}</div>`; return;
+          }
           if(!isHist && !$("#n_consent").checked){
             $("#nErr").innerHTML = `<div class="err">${t("The customer must be shown the privacy notice and agree before their details can be saved.")}</div>`; return;
           }
           const btn = $("#nGo"); btn.disabled = true; btn.textContent = "Saving…";
           try{
             const row = await DataSource.createWarranty({
-              name:v("n_name"), phone:v("n_phone"), email:v("n_email"), address:v("n_addr"),
-              area:v("n_area"), installDate:v("n_date"), model:$("#n_model").value,
+              name:v("n_name"), phone:normalizePhone(v("n_phone")) || v("n_phone"), email:v("n_email"),
+              address1:v("n_addr1"), address2:v("n_addr2"), postcode:v("n_postcode"),
+              area:v("n_area"), state:$("#n_state").value, installDate:v("n_date"), model:$("#n_model").value,
               serial:v("n_serial"), channel:$("#n_channel").value,
               dealer:v("n_dealer"), installer:v("n_installer"),
               consent: !isHist,
