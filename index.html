@@ -199,7 +199,9 @@ tbody tr.row-bl td b{color:var(--red)}
 .edit-row{padding:8px 0;border-bottom:1px solid var(--line)}
 .edit-row:last-child{border-bottom:0}
 .edit-row ul{margin:4px 0 0;padding-left:18px;font-size:.86rem}
+.removed-note{background:#EEF1F3;border:1px solid var(--line);border-radius:7px;padding:10px 14px;margin:0 0 12px;font-size:.9rem}
 .dupwarn{background:var(--amber-bg);border:1px solid #EFD9AE;border-radius:7px;padding:12px 14px;margin:0 0 12px;color:var(--ink)}
+.phone-owner{background:#fff;border:1px solid #EFD9AE;border-radius:5px;padding:8px 10px;margin:8px 0;font-size:.88rem}
 .dupwarn ul{margin:8px 0;padding-left:18px}
 .dupwarn li{margin:4px 0;font-size:.9rem}
 fieldset.addr{border:1px solid var(--line);border-radius:7px;padding:10px 14px 4px;margin:0 0 14px}
@@ -790,7 +792,11 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under warranty":"保修期内","Edit details":"编辑资料","Back to record":"返回记录",
+  "Under warranty":"保修期内","Back to all records":"返回全部记录",
+  "Showing removed records only. Open one and press Restore this record to bring it back.":"只显示已删除的记录。打开其中一笔并按「恢复此记录」即可恢复。",
+  "To find it again later: Registry → Removed records.":"日后要找回：登记表 → 已删除的记录。",
+  "This phone number already belongs to":"此电话号码已属于",
+  "Saving adds this unit under that customer, so the name and email typed here are not used. If the customer's name is wrong, correct it with Edit details on their record.":"保存后，此机组会加到该客户名下，此处填写的姓名和电邮不会被使用。如客户姓名有误，请在其记录中用「编辑资料」更正。","Edit details":"编辑资料","Back to record":"返回记录",
   "The warranty number and the customer's consent record cannot be changed. Every change is recorded on the record.":"保修号和客户同意记录不能修改。每项修改都会记录在案。",
   "Name, phone and email apply to every unit registered under this customer.":"姓名、电话和电邮适用于此客户名下的所有机组。",
   "Changing the install date, product or Project years recalculates the warranty and maintenance dates.":"修改安装日期、产品或项目年数，会重新计算保修和保养日期。",
@@ -1437,7 +1443,11 @@ async function viewList(){
       <button class="btn btn-s" id="fToggle">${t("More filters")}${
         (FILTER.status!=="all"||FILTER.channel!=="all"||FILTER.faults!=="all"||FILTER.pay!=="all")
           ? ' <span class="dot"></span>' : ""}</button>
+      ${IS_ADMIN ? `<button class="btn btn-s" id="fRemoved">${
+        FILTER.status === "removed" ? t("Back to all records") : t("Removed records")}</button>` : ""}
     </div>
+    ${FILTER.status === "removed" ? `<div class="removed-note">${
+      t("Showing removed records only. Open one and press Restore this record to bring it back.")}</div>` : ""}
 
     <div class="filters ${FILTERS_OPEN ? "show" : ""}">
       <div class="field"><label for="fs">${t("Warranty status")}</label>
@@ -1749,7 +1759,8 @@ async function viewDetail(id){
       <div class="card-pad" style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:center">
         <div><b>${t("This record has been removed")}</b>
           <div class="tiny muted">${t("Removed by")} ${esc(r.voidedBy || "—")}${r.voidedAt ? " · " + fmt(String(r.voidedAt).slice(0,10)) : ""} — ${esc(r.voidedReason || "")}</div>
-          <div class="tiny muted">${t("It no longer appears in the registry, searches or reminders.")}</div></div>
+          <div class="tiny muted">${t("It no longer appears in the registry, searches or reminders.")}${
+            IS_ADMIN ? " " + t("To find it again later: Registry → Removed records.") : ""}</div></div>
         ${IS_ADMIN ? `<button class="btn btn-s" id="recRestore">${t("Restore this record")}</button>` : ""}
       </div></div>` : ""}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin:-6px 0 18px">
@@ -2693,6 +2704,14 @@ async function render(){
                 <ul>${dups.slice(0, 8).map(d => `<li><a href="#/admin/${d.id}" target="_blank" rel="noopener">${esc(d.warranty_no)}</a>
                   · ${esc(d.customer_name)}${d.site_address ? " · " + esc(d.site_address) : ""}
                   <span class="pill a">${esc(reasonText[d.reason] || d.reason)}</span></li>`).join("")}</ul>
+                ${(() => {
+                  const typed = v("n_name").toLowerCase();
+                  const owner = dups.find(d => d.reason === "same phone number");
+                  return owner && owner.customer_name && owner.customer_name.toLowerCase() !== typed
+                    ? `<div class="phone-owner">${t("This phone number already belongs to")} <b>${esc(owner.customer_name)}</b>. ${
+                        t("Saving adds this unit under that customer, so the name and email typed here are not used. If the customer's name is wrong, correct it with Edit details on their record.")}</div>`
+                    : "";
+                })()}
                 <div class="tiny muted">${t("If this is a different installation, press the button again to register it anyway.")}</div></div>`;
               $("#nGo").textContent = t("Register anyway");
               dupConfirmed = true;
@@ -3073,6 +3092,11 @@ async function render(){
         const ft = $("#fToggle");
         if(ft) ft.onclick = () => { FILTERS_OPEN = !FILTERS_OPEN; redraw(); };
 
+        const fr = $("#fRemoved");
+        if(fr) fr.onclick = () => {
+          FILTER.status = FILTER.status === "removed" ? "all" : "removed";
+          PAGE = 0; redraw();
+        };
         const fc = $("#fClear");
         if(fc) fc.onclick = () => {
           FILTER.status = "all"; FILTER.channel = "all";
