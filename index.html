@@ -196,6 +196,9 @@ tbody tr.row-bl td b{color:var(--red)}
   .ph-t tr{page-break-inside:avoid}
   .ph-foot{margin-top:16px;font-size:8.5pt;color:#444}
 }
+.edit-row{padding:8px 0;border-bottom:1px solid var(--line)}
+.edit-row:last-child{border-bottom:0}
+.edit-row ul{margin:4px 0 0;padding-left:18px;font-size:.86rem}
 .dupwarn{background:var(--amber-bg);border:1px solid #EFD9AE;border-radius:7px;padding:12px 14px;margin:0 0 12px;color:var(--ink)}
 .dupwarn ul{margin:8px 0;padding-left:18px}
 .dupwarn li{margin:4px 0;font-size:.9rem}
@@ -301,6 +304,8 @@ function inDaysISO(n){
    the page, so a half-written note is never thrown away without asking. */
 const DRAFT_FIELDS = ["sv_note","sv_tech","sv_parts","sv_amt",
                       "n_name","n_phone","n_addr1","n_addr2","n_postcode","n_area","n_serial","wn","pn"];
+/* The edit form starts filled in, so "something typed" there means changed
+   from what was loaded — checked separately in draftInProgress(). */
 
 /* Malaysian states and federal territories, as stored in the database. */
 const MY_STATES = ["Johor","Kedah","Kelantan","Melaka","Negeri Sembilan","Pahang","Perak","Perlis",
@@ -343,6 +348,11 @@ function normalizePhone(p){
   return null;
 }
 function draftInProgress(){
+  if(document.getElementById("eSave") && CURRENT_RECORD){
+    const r = CURRENT_RECORD, val = id => (document.getElementById(id) || {}).value || "";
+    if(val("e_name") !== (r.name || "") || val("e_addr1") !== (r.site1 || "") ||
+       val("e_phone") !== (r.phone || "") || val("e_serial") !== (r.serial || "")) return true;
+  }
   return DRAFT_FIELDS.some(id => {
     const el = document.getElementById(id);
     return el && typeof el.value === "string" && el.value.trim() !== "";
@@ -375,6 +385,8 @@ function rowFromView(v, service = [], claims = []) {
     model: v.model_code, name: v.customer_name, phone: v.customer_phone,
     email: v.customer_email || "", address: v.site_address || v.address || "",
     area: v.site_area || v.customer_area || "",
+    site1: v.site_address1 || "", site2: v.site_address2 || "", sitePostcode: v.site_postcode || "",
+    siteArea: v.site_area || "", siteState: v.site_state || "",
     installDate: v.install_date, channel: v.channel,
     dealer: v.dealer_name || "", installer: v.installer || "",
     modelName: v.model_name || "",
@@ -481,12 +493,13 @@ const DataSource = {
       return REC_CACHE.row;
     }
     // All three in one go rather than the view first, then the rest.
-    const [vRes, svcRes, clRes, mRes, fRes] = await Promise.all([
+    const [vRes, svcRes, clRes, mRes, fRes, eRes] = await Promise.all([
       sb.from("v_installations").select("*").eq("id", id).single(),
       sb.from("service_visits").select("*").eq("installation_id", id).order("visit_date"),
       sb.from("claims").select("*").eq("installation_id", id).order("raised_on"),
       sb.from("v_maintenance").select("*").eq("installation_id", id).order("sort_order"),
-      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override").eq("id", id).single()
+      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override").eq("id", id).single(),
+      sb.from("installation_edits").select("*").eq("installation_id", id).order("edited_at", { ascending: false })
     ]);
     if (vRes.error || !vRes.data) return null;
     /* An error on any of these used to be swallowed, so a permissions or
@@ -504,6 +517,7 @@ const DataSource = {
     row.projectName = fRes.data ? (fRes.data.project_name || "") : "";
     row.gOverride   = fRes.data ? fRes.data.guarantee_years_override : null;
     row.wOverride   = fRes.data ? fRes.data.warranty_years_override  : null;
+    row.edits       = (eRes && !eRes.error && eRes.data) ? eRes.data : [];
     REC_CACHE = { id, row, at: Date.now() };
     return row;
   },
@@ -658,6 +672,19 @@ const DataSource = {
     if (error) throw error;
     clearListCache();
   },
+  async updateDetails(id, p){
+    const { error } = await sb.rpc("update_installation_details", {
+      p_id: Number(id), p_name: p.name, p_phone: p.phone, p_email: p.email || null,
+      p_site_address1: p.address1 || null, p_site_address2: p.address2 || null,
+      p_site_area: p.area || null, p_site_state: p.state || null, p_site_postcode: p.postcode || null,
+      p_model_code: p.model, p_serial_no: p.serial || null, p_install_date: p.installDate,
+      p_channel: p.channel, p_dealer_name: p.dealer || null, p_installer: p.installer || null,
+      p_project_name: p.projectName || null,
+      p_guarantee_years: p.guaranteeYears ?? null, p_warranty_years: p.warrantyYears ?? null });
+    if (error) throw error;
+    clearListCache();
+    REC_CACHE = { id: null, row: null, at: 0 };
+  },
   async findDuplicates(p){
     const { data, error } = await sb.rpc("find_possible_duplicates", {
       p_phone: p.phone || null, p_site_address1: p.address1 || null,
@@ -763,7 +790,15 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under warranty":"保修期内","End User":"终端用户","Contractor":"承包商","Dealer":"经销商","Project":"工程项目",
+  "Under warranty":"保修期内","Edit details":"编辑资料","Back to record":"返回记录",
+  "The warranty number and the customer's consent record cannot be changed. Every change is recorded on the record.":"保修号和客户同意记录不能修改。每项修改都会记录在案。",
+  "Name, phone and email apply to every unit registered under this customer.":"姓名、电话和电邮适用于此客户名下的所有机组。",
+  "Changing the install date, product or Project years recalculates the warranty and maintenance dates.":"修改安装日期、产品或项目年数，会重新计算保修和保养日期。",
+  "Save changes":"保存修改","Saving…":"保存中…","Changes to this record":"此记录的修改",
+  "This record has been removed. Restore it before editing.":"此记录已被删除，请先恢复再编辑。",
+  "Customer name":"客户姓名","Address 2":"地址 2","Product":"产品","Install date":"安装日期","Channel":"来源",
+  "Dealer / contractor":"经销商／承包商","Project name":"项目名称","Project guarantee years":"项目保证期（年）",
+  "Project warranty years":"项目保修期（年）","Installed by":"安装人员","End User":"终端用户","Contractor":"承包商","Dealer":"经销商","Project":"工程项目",
   "Contractor name":"承包商名称","Project warranty":"工程项目保修","Project name (optional)":"项目名称（可选）",
   "Guarantee (years)":"保证期（年）","Warranty (years)":"保修期（年）","Project terms":"项目条款",
   "Filled in from the product's standard terms. Change them to match this project's agreement.":"已按产品的标准条款填入，请按此项目的合约修改。",
@@ -1718,6 +1753,7 @@ async function viewDetail(id){
         ${IS_ADMIN ? `<button class="btn btn-s" id="recRestore">${t("Restore this record")}</button>` : ""}
       </div></div>` : ""}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin:-6px 0 18px">
+      ${!r.voided ? `<button class="btn btn-s" id="recEdit" style="padding:7px 13px;font-size:.85rem">${t("Edit details")}</button>` : ""}
       <button class="btn btn-s" id="recPrint" style="padding:7px 13px;font-size:.85rem">${t("Print service history")}</button>
       ${IS_ADMIN && !r.voided ? `<button class="btn btn-s" id="recRemove"
          style="padding:7px 13px;font-size:.85rem;color:var(--red)">${t("Remove this record")}</button>` : ""}
@@ -1766,10 +1802,139 @@ async function viewDetail(id){
               r.channel === "project" && r.projectName ? " — " + esc(r.projectName) : ""}</dd>
             ${r.channel === "project" && r.gOverride != null ? `<dt>${t("Project terms")}</dt><dd>${
               r.gOverride} ${t("yr")} ${t("Guarantee")} + ${r.wOverride} ${t("yr")} ${t("Warranty")}</dd>` : ""}
-            <dt>${t("Dealer")}</dt><dd>${esc(r.dealer||"—")}</dd>
             <dt>${t("Installed by")}</dt><dd>${esc(r.installer||"—")}</dd></dl></div>
+        ${(r.edits || []).length ? `<div class="card"><div class="sec-h">${t("Changes to this record")}</div>
+          <div class="card-pad" style="padding-top:8px">${r.edits.slice(0, 20).map(e => `
+            <div class="edit-row">
+              <div class="tiny muted">${fmt(String(e.edited_at).slice(0,10))} · ${esc(e.edited_by)}</div>
+              <ul>${Object.entries(e.changes || {}).map(([k, v]) =>
+                `<li><b>${esc(t(k))}</b>: <span class="muted">${esc(v[0] ?? "—")}</span> → ${esc(v[1] ?? "—")}</li>`).join("")}</ul>
+            </div>`).join("")}</div></div>` : ""}
       </div>
     </div></div>`;
+}
+
+/* ---------- edit an existing record (file 29) ---------- */
+function productOptions(selected){
+  const groups = {};
+  Object.entries(MODELS)
+    .filter(([k,m]) => m.active !== false || k === selected)
+    .sort((a,b) => (a[1].sortOrder ?? 999) - (b[1].sortOrder ?? 999) || a[0].localeCompare(b[0]))
+    .forEach(([k,m]) => { (groups[m.category || ""] = groups[m.category || ""] || []).push([k,m]); });
+  const termText = m => (Number(m.guaranteeYears) > 0
+      ? `${m.guaranteeYears} ${t("yr")} ${t("Guarantee")} + ${m.warrantyYears} ${t("yr")} ${t("Warranty")}`
+      : `${m.warrantyYears} ${t("yr")} ${t("Warranty")}`);
+  const optLine = ([k,m]) =>
+    `<option value="${esc(k)}"${k === selected ? " selected" : ""}>${esc((m.brand ? m.brand + " · " : "") + m.name)} — ${esc(termText(m))}</option>`;
+  return Object.entries(groups).map(([cat, list]) => cat
+      ? `<optgroup label="${esc(cat)}">${list.map(optLine).join("")}</optgroup>`
+      : list.map(optLine).join("")).join("");
+}
+
+async function viewEdit(id){
+  const r = await DataSource.getById(id, true);
+  CURRENT_RECORD = r;
+  if(!r) return `<div class="page"><div class="card empty">${t("Record not found.")}</div></div>`;
+  if(r.voided) return `<div class="page narrow"><div class="card card-pad">${t("This record has been removed. Restore it before editing.")}</div></div>`;
+  const ch = channelInfo(r.channel).v;
+  const val = x => esc(x == null ? "" : String(x));
+  return `<div class="page narrow">
+    <button class="crumb" onclick="location.hash='#/admin/${r.id}'">&larr; ${t("Back to record")}</button>
+    <div class="card card-pad">
+      <h2>${t("Edit details")} <span class="mono" style="font-size:.9rem;color:var(--grey)">${esc(r.warrantyNo)}</span></h2>
+      <p class="tiny muted" style="margin:4px 0 16px">${t("The warranty number and the customer's consent record cannot be changed. Every change is recorded on the record.")}</p>
+      <div id="eErr"></div>
+      <fieldset class="addr">
+        <legend>${t("Customer")}</legend>
+        <p class="tiny muted" style="margin:0 0 8px">${t("Name, phone and email apply to every unit registered under this customer.")}</p>
+        <div class="field"><label for="e_name">${t("Customer name")}</label><input id="e_name" value="${val(r.name)}"></div>
+        <div class="row2">
+          <div class="field"><label for="e_phone">${t("Phone")}</label><input id="e_phone" value="${val(r.phone)}"></div>
+          <div class="field"><label for="e_email">${t("Email (optional)")}</label><input id="e_email" value="${val(r.email)}"></div></div>
+      </fieldset>
+      <fieldset class="addr">
+        <legend>${t("Installation site address")}</legend>
+        <div class="field"><label for="e_addr1">${t("Address 1")}</label><input id="e_addr1" value="${val(r.site1)}"></div>
+        <div class="field"><label for="e_addr2">${t("Address 2 (optional)")}</label><input id="e_addr2" value="${val(r.site2)}"></div>
+        <div class="row2">
+          <div class="field"><label for="e_postcode">${t("Postcode")}</label><input id="e_postcode" inputmode="numeric" value="${val(r.sitePostcode)}"></div>
+          <div class="field"><label for="e_area">${t("Area")}</label><input id="e_area" value="${val(r.siteArea)}"></div></div>
+        <div class="field"><label for="e_state">${t("State")}</label>
+          <select id="e_state"><option value="">${t("Choose state")}</option>${
+            MY_STATES.map(st => `<option value="${esc(st)}"${st === r.siteState ? " selected" : ""}>${esc(st)}</option>`).join("")}</select></div>
+      </fieldset>
+      <div class="row2">
+        <div class="field"><label for="e_model">${t("Model")}</label><select id="e_model">${productOptions(r.model)}</select></div>
+        <div class="field"><label for="e_serial">${t("Serial number")}</label><input id="e_serial" value="${val(r.serial)}"></div></div>
+      <div class="row2">
+        <div class="field"><label for="e_date">${t("Install date")}</label><input id="e_date" type="date" value="${val(r.installDate)}"></div>
+        <div class="field"><label for="e_installer">${t("Installed by")}</label><input id="e_installer" value="${val(r.installer)}"></div></div>
+      <div class="row2">
+        <div class="field"><label for="e_channel">${t("Sold via")}</label>
+          <select id="e_channel">${CHANNELS.map(c => `<option value="${c.v}"${c.v === ch ? " selected" : ""}>${t(c.label)}</option>`).join("")}</select></div>
+        <div class="field" id="e_dealerrow"><label for="e_dealer" id="e_dealerlbl">${t("Dealer name")}</label>
+          <input id="e_dealer" value="${val(ch === "dealer" || ch === "contractor" ? r.dealer : "")}"></div></div>
+      <fieldset class="addr" id="e_projrow" style="display:none">
+        <legend>${t("Project warranty")}</legend>
+        <div class="field"><label for="e_proj">${t("Project name (optional)")}</label><input id="e_proj" value="${val(r.projectName)}"></div>
+        <div class="row2">
+          <div class="field"><label for="e_gy">${t("Guarantee (years)")}</label><input id="e_gy" type="number" min="0" max="30" value="${val(r.gOverride)}"></div>
+          <div class="field"><label for="e_wy">${t("Warranty (years)")}</label><input id="e_wy" type="number" min="0" max="30" value="${val(r.wOverride)}"></div></div>
+      </fieldset>
+      <p class="tiny muted">${t("Changing the install date, product or Project years recalculates the warranty and maintenance dates.")}</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-p" id="eSave">${t("Save changes")}</button>
+        <button class="btn btn-s" id="eCancel">${t("Cancel")}</button></div>
+    </div></div>`;
+}
+
+function wireEdit(id){
+  const ch = $("#e_channel"), mdl = $("#e_model");
+  const fillTerms = () => { const mm = MODELS[mdl.value] || {};
+    if($("#e_gy").value === "") $("#e_gy").value = mm.guaranteeYears ?? "";
+    if($("#e_wy").value === "") $("#e_wy").value = mm.warrantyYears ?? ""; };
+  const sync = () => {
+    const v = ch.value;
+    $("#e_dealerrow").style.visibility = (v === "dealer" || v === "contractor") ? "visible" : "hidden";
+    $("#e_dealerlbl").textContent = v === "contractor" ? t("Contractor name") : t("Dealer name");
+    if(v === "project") fillTerms();
+    $("#e_projrow").style.display = v === "project" ? "" : "none";
+  };
+  ch.onchange = sync; sync();
+  const ph = $("#e_phone");
+  ph.addEventListener("blur", () => { const f = normalizePhone(ph.value); if(f) ph.value = f; });
+  const sn = $("#e_serial");
+  sn.addEventListener("blur", () => { sn.value = normalizeSerial(sn.value); });
+  const pc = $("#e_postcode");
+  pc.addEventListener("input", () => { pc.value = pc.value.replace(/\D/g, "").slice(0, 5); });
+  $("#eCancel").onclick = () => { location.hash = "#/admin/" + id; };
+  $("#eSave").onclick = async () => {
+    const v = k => $("#"+k).value.trim();
+    const err = m => { $("#eErr").innerHTML = `<div class="err">${esc(m)}</div>`; };
+    if(!v("e_name") || !v("e_phone") || !v("e_date")) return err(t("Name, phone and install date are required."));
+    if(!normalizePhone(v("e_phone"))) return err(t("Please enter a valid phone number, for example 012-345 6789. For a number outside Malaysia, start with +"));
+    if(v("e_postcode") && !/^\d{5}$/.test(v("e_postcode"))) return err(t("Postcode must be 5 digits."));
+    const chv = ch.value, gy = v("e_gy"), wy = v("e_wy");
+    if(chv === "project" && (gy === "" || wy === "" || +gy < 0 || +gy > 30 || +wy < 0 || +wy > 30))
+      return err(t("For a Project, enter the guarantee and warranty years (0 to 30)."));
+    const b = $("#eSave"); b.disabled = true; b.textContent = t("Saving…");
+    try{
+      await DataSource.updateDetails(id, {
+        name: v("e_name"), phone: normalizePhone(v("e_phone")), email: v("e_email"),
+        address1: v("e_addr1"), address2: v("e_addr2"), postcode: v("e_postcode"),
+        area: v("e_area"), state: $("#e_state").value,
+        model: mdl.value, serial: normalizeSerial(v("e_serial")), installDate: v("e_date"),
+        channel: chv, dealer: (chv === "dealer" || chv === "contractor") ? v("e_dealer") : "",
+        installer: v("e_installer"),
+        projectName: chv === "project" ? v("e_proj") : "",
+        guaranteeYears: chv === "project" ? Number(gy) : null,
+        warrantyYears:  chv === "project" ? Number(wy) : null });
+      location.hash = "#/admin/" + id;
+    }catch(e){
+      err(e.message || String(e));
+      b.disabled = false; b.textContent = t("Save changes");
+    }
+  };
 }
 
 function viewNew(){
@@ -2570,6 +2735,13 @@ async function render(){
         return;
       }
 
+      const em = r.match(/^#\/admin\/(\d+)\/edit$/);
+      if(em){
+        app.innerHTML = await viewEdit(em[1]);
+        if($("#eSave")) wireEdit(em[1]);
+        return;
+      }
+
       const m = r.match(/^#\/admin\/(\d+)$/);
       if(m){
         app.innerHTML = await viewDetail(m[1]);
@@ -2714,6 +2886,8 @@ async function render(){
         if(bOn)  bOn.onclick  = () => doBl(true);
         if(bOff) bOff.onclick = () => doBl(false);
 
+        const eBtn = $("#recEdit");
+        if(eBtn) eBtn.onclick = () => { location.hash = "#/admin/" + m[1] + "/edit"; };
         const pBtn = $("#recPrint");
         if(pBtn) pBtn.onclick = () => printHistory(CURRENT_RECORD);
         const rmBtn = $("#recRemove");
