@@ -196,6 +196,9 @@ tbody tr.row-bl td b{color:var(--red)}
   .ph-t tr{page-break-inside:avoid}
   .ph-foot{margin-top:16px;font-size:8.5pt;color:#444}
 }
+.dupwarn{background:var(--amber-bg);border:1px solid #EFD9AE;border-radius:7px;padding:12px 14px;margin:0 0 12px;color:var(--ink)}
+.dupwarn ul{margin:8px 0;padding-left:18px}
+.dupwarn li{margin:4px 0;font-size:.9rem}
 fieldset.addr{border:1px solid var(--line);border-radius:7px;padding:10px 14px 4px;margin:0 0 14px}
 fieldset.addr legend{font-size:.82rem;font-weight:600;color:var(--grey);padding:0 6px}
 .svc-kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;margin:6px 0 0;font-size:.85rem}
@@ -303,6 +306,24 @@ const DRAFT_FIELDS = ["sv_note","sv_tech","sv_parts","sv_amt",
 const MY_STATES = ["Johor","Kedah","Kelantan","Melaka","Negeri Sembilan","Pahang","Perak","Perlis",
   "Pulau Pinang","Sabah","Sarawak","Selangor","Terengganu",
   "W.P. Kuala Lumpur","W.P. Labuan","W.P. Putrajaya"];
+
+document.addEventListener("focusout", e => {
+  if(e.target && e.target.id === "sv_sn2") e.target.value = normalizeSerial(e.target.value);
+});
+
+/* Sales channels (file 28). "direct" is the old name for End User. */
+const CHANNELS = [
+  { v:"end_user",   label:"End User",   cls:"g" },
+  { v:"contractor", label:"Contractor", cls:"n" },
+  { v:"dealer",     label:"Dealer",     cls:"n" },
+  { v:"project",    label:"Project",    cls:"a" }
+];
+function channelInfo(ch){
+  const v = ch === "direct" ? "end_user" : ch;
+  return CHANNELS.find(c => c.v === v) || { v, label: v || "—", cls:"n" };
+}
+/* Same rule as normalize_serial() in the database: capitals, no spaces. */
+function normalizeSerial(x){ return String(x || "").trim().replace(/\s+/g, "").toUpperCase(); }
 
 /* Same rules as normalize_phone() in the database (file 26), so staff see the
    saved format as soon as they leave the box. The database has the final say. */
@@ -465,7 +486,7 @@ const DataSource = {
       sb.from("service_visits").select("*").eq("installation_id", id).order("visit_date"),
       sb.from("claims").select("*").eq("installation_id", id).order("raised_on"),
       sb.from("v_maintenance").select("*").eq("installation_id", id).order("sort_order"),
-      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at").eq("id", id).single()
+      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override").eq("id", id).single()
     ]);
     if (vRes.error || !vRes.data) return null;
     /* An error on any of these used to be swallowed, so a permissions or
@@ -480,6 +501,9 @@ const DataSource = {
     row.voidedBy    = fRes.data ? (fRes.data.voided_by || "") : "";
     row.voidedAt    = fRes.data ? (fRes.data.voided_at || "") : "";
     row.voidedReason = vRes.data.voided_reason || "";
+    row.projectName = fRes.data ? (fRes.data.project_name || "") : "";
+    row.gOverride   = fRes.data ? fRes.data.guarantee_years_override : null;
+    row.wOverride   = fRes.data ? fRes.data.warranty_years_override  : null;
     REC_CACHE = { id, row, at: Date.now() };
     return row;
   },
@@ -514,7 +538,10 @@ const DataSource = {
       p_dealer_name:p.dealer || null, p_installer:p.installer || null,
       p_consent: p.consent === true, p_notice_ver: 'v1',
       p_historical: p.historical === true,
-      p_warranty_no: p.warrantyNo || null
+      p_warranty_no: p.warrantyNo || null,
+      p_project_name: p.projectName || null,
+      p_guarantee_years: p.guaranteeYears ?? null,
+      p_warranty_years:  p.warrantyYears ?? null
     });
     if (error) throw error;
     clearListCache();
@@ -631,6 +658,13 @@ const DataSource = {
     if (error) throw error;
     clearListCache();
   },
+  async findDuplicates(p){
+    const { data, error } = await sb.rpc("find_possible_duplicates", {
+      p_phone: p.phone || null, p_site_address1: p.address1 || null,
+      p_site_postcode: p.postcode || null, p_serial: p.serial || null });
+    if (error) throw error;
+    return Array.isArray(data) ? data : [];
+  },
   async removeInstallation(id, reason){
     const { error } = await sb.rpc("remove_installation", { p_id: Number(id), p_reason: reason });
     if (error) throw error;
@@ -729,7 +763,15 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under warranty":"保修期内","Replacement tank S/N":"更换水箱机身号",
+  "Under warranty":"保修期内","End User":"终端用户","Contractor":"承包商","Dealer":"经销商","Project":"工程项目",
+  "Contractor name":"承包商名称","Project warranty":"工程项目保修","Project name (optional)":"项目名称（可选）",
+  "Guarantee (years)":"保证期（年）","Warranty (years)":"保修期（年）","Project terms":"项目条款",
+  "Filled in from the product's standard terms. Change them to match this project's agreement.":"已按产品的标准条款填入，请按此项目的合约修改。",
+  "For a Project, enter the guarantee and warranty years (0 to 30).":"工程项目请填写保证期和保修期年数（0 至 30）。",
+  "Possible duplicate — please check before saving":"可能重复——保存前请先核对",
+  "same serial number":"相同机身号","same site address":"相同安装地址","same phone number":"相同电话号码",
+  "If this is a different installation, press the button again to register it anyway.":"如果这是另一个安装，请再按一次按钮继续登记。",
+  "Register anyway":"仍然登记","Replacement tank S/N":"更换水箱机身号",
   "Only if the tank was replaced on this visit":"仅在本次上门更换了水箱时填写",
   "This record has been removed":"此记录已被删除","It no longer appears in the registry, searches or reminders.":"它不再出现在登记表、搜索或提醒中。",
   "Restore this record":"恢复此记录","Print service history":"打印服务记录","Remove this record":"删除此记录",
@@ -1332,7 +1374,7 @@ async function viewList(){
         r.faultVisits >= REPEAT_THRESHOLD
           ? ` <span class="pill x">${r.faultVisits} ${t("repairs")}</span>`
           : r.faultVisits === 1 ? ` <span class="pill a">1 ${t("repair")}</span>` : ""}</td>
-      <td><span class="pill ${r.channel==="direct"?"g":"n"}">${r.channel==="direct"?t("Direct"):t("Dealer")}</span>
+      <td><span class="pill ${channelInfo(r.channel).cls}">${t(channelInfo(r.channel).label)}</span>
         ${r.dealer?`<div class="src">${esc(r.dealer)}</div>`:""}</td>
     </tr>`).join("")
     : `<tr><td colspan="6" class="empty">${counts.total===0
@@ -1367,8 +1409,7 @@ async function viewList(){
         <select id="fs"><option value="all">${t("All")}</option><option value="guarantee">${t("Under guarantee")}</option>
         <option value="warranty">${t("Under warranty")}</option><option value="expired">${t("Expired")}</option>${IS_ADMIN ? `<option value="removed">${t("Removed records")}</option>` : ""}</select></div>
       <div class="field"><label for="fc">${t("Sold via")}</label>
-        <select id="fc"><option value="all">${t("All")}</option><option value="direct">${t("Direct")}</option>
-        <option value="dealer">${t("Dealer")}</option></select></div>
+        <select id="fc"><option value="all">${t("All")}</option>${CHANNELS.map(c => `<option value="${c.v}">${t(c.label)}</option>`).join("")}</select></div>
       <div class="field"><label for="fp">${t("Payment")}</label>
         <select id="fp"><option value="all">${t("All")}</option>
         <option value="unpaid">${t("Has unpaid")}</option>
@@ -1537,6 +1578,9 @@ async function viewDetail(id){
   CURRENT_RECORD = r;
   if(!r) return `<div class="page"><div class="card empty">${t("Record not found.")}</div></div>`;
   const c = coverage(r);
+  /* A Project's own terms replace the product's on this record. */
+  if(r.gOverride != null && r.wOverride != null)
+    c.model = Object.assign({}, c.model, { guaranteeYears: r.gOverride, warrantyYears: r.wOverride });
   const faults = faultVisitsInWindow(r.service);
   const repeatFlag = faults.length >= REPEAT_THRESHOLD;
 
@@ -1646,7 +1690,7 @@ async function viewDetail(id){
         <div class="src">${esc(r.warrantyNo)}${r.serial?" · "+esc(r.serial):""}</div></div>
       <div style="display:flex;gap:7px;flex-wrap:wrap">${pill(c)}
         ${r.blacklisted ? `<span class="pill x">${t("Blacklisted")}</span>` : ""}
-        <span class="pill ${r.channel==="direct"?"g":"n"}">${r.channel==="direct"?t("Sold direct"):t("Via dealer")}</span></div>
+        <span class="pill ${channelInfo(r.channel).cls}">${t(channelInfo(r.channel).label)}</span></div>
     </div>
     ${r.custUnpaidVisits > 0 ? `<div class="card" style="background:${
         r.custOverdueVisits > 0 ? "var(--red-bg);border-color:#F0C7C2" : "var(--amber-bg);border-color:#EFD9AE"};margin-bottom:18px">
@@ -1717,7 +1761,11 @@ async function viewDetail(id){
         </div>
         <div class="card"><div class="sec-h">${t("Origin")}</div>
           <dl class="kv">
-            <dt>${t("Channel")}</dt><dd>${r.channel==="direct"?t("Direct"):t("Dealer")}</dd>
+            <dt>${t("Channel")}</dt><dd>${t(channelInfo(r.channel).label)}${
+              (r.channel === "dealer" || r.channel === "contractor") && r.dealer ? " — " + esc(r.dealer) : ""}${
+              r.channel === "project" && r.projectName ? " — " + esc(r.projectName) : ""}</dd>
+            ${r.channel === "project" && r.gOverride != null ? `<dt>${t("Project terms")}</dt><dd>${
+              r.gOverride} ${t("yr")} ${t("Guarantee")} + ${r.wOverride} ${t("yr")} ${t("Warranty")}</dd>` : ""}
             <dt>${t("Dealer")}</dt><dd>${esc(r.dealer||"—")}</dd>
             <dt>${t("Installed by")}</dt><dd>${esc(r.installer||"—")}</dd></dl></div>
       </div>
@@ -1745,7 +1793,7 @@ function viewNew(){
     <div class="card card-pad">
       <h2>${t("Register an installation")}</h2>
       <p class="tiny muted">${t("Warranty number is generated automatically.")}</p>
-      <div id="nErr"></div>
+      <div id="nDup"></div><div id="nErr"></div>
 
       <div class="consent" style="background:var(--tint);margin:0 0 18px">
         <label style="display:flex;gap:10px;align-items:flex-start;font-family:var(--body);
@@ -1784,8 +1832,16 @@ function viewNew(){
       </div>
       <div class="row2">
         <div class="field"><label for="n_channel">${t("Sold via")}</label>
-          <select id="n_channel"><option value="direct">${t("Direct")}</option><option value="dealer">${t("Dealer")}</option></select></div>
-        <div class="field"><label for="n_dealer">${t("Dealer name")}</label><input id="n_dealer" placeholder="Blank if direct"></div></div>
+          <select id="n_channel">${CHANNELS.map(c => `<option value="${c.v}">${t(c.label)}</option>`).join("")}</select></div>
+        <div class="field" id="n_dealerrow"><label for="n_dealer" id="n_dealerlbl">${t("Dealer name")}</label><input id="n_dealer"></div></div>
+      <fieldset class="addr" id="n_projrow" style="display:none">
+        <legend>${t("Project warranty")}</legend>
+        <div class="field"><label for="n_proj">${t("Project name (optional)")}</label><input id="n_proj"></div>
+        <div class="row2">
+          <div class="field"><label for="n_gy">${t("Guarantee (years)")}</label><input id="n_gy" type="number" min="0" max="30" step="1"></div>
+          <div class="field"><label for="n_wy">${t("Warranty (years)")}</label><input id="n_wy" type="number" min="0" max="30" step="1"></div></div>
+        <p class="tiny muted" style="margin:0 0 10px">${t("Filled in from the product's standard terms. Change them to match this project's agreement.")}</p>
+      </fieldset>
       <div class="field"><label for="n_installer">${t("Installed by")}</label><input id="n_installer"></div>
 
       <div class="consent" id="n_consentrow">
@@ -2410,6 +2466,27 @@ async function render(){
         ph.addEventListener("blur", () => { const f = normalizePhone(ph.value); if(f) ph.value = f; });
         const pc = $("#n_postcode");
         pc.addEventListener("input", () => { pc.value = pc.value.replace(/\D/g, "").slice(0, 5); });
+        const sn = $("#n_serial");
+        sn.addEventListener("blur", () => { sn.value = normalizeSerial(sn.value); });
+        const ch = $("#n_channel"), mdl = $("#n_model");
+        const fillTerms = () => {
+          const mm = MODELS[mdl.value] || {};
+          $("#n_gy").value = mm.guaranteeYears ?? "";
+          $("#n_wy").value = mm.warrantyYears ?? "";
+        };
+        const syncChannel = () => {
+          const v = ch.value;
+          $("#n_dealerrow").style.visibility = (v === "dealer" || v === "contractor") ? "visible" : "hidden";
+          $("#n_dealerlbl").textContent = v === "contractor" ? t("Contractor name") : t("Dealer name");
+          const proj = v === "project";
+          if(proj && $("#n_projrow").style.display === "none") fillTerms();
+          $("#n_projrow").style.display = proj ? "" : "none";
+        };
+        ch.onchange = syncChannel; syncChannel();
+        mdl.addEventListener("change", () => { if(ch.value === "project") fillTerms(); });
+        let dupConfirmed = false;
+        ["n_phone","n_addr1","n_postcode","n_serial"].forEach(id =>
+          $("#"+id).addEventListener("input", () => { dupConfirmed = false; $("#nDup").innerHTML = ""; }));
 
         $("#nGo").onclick = async () => {
           const v = id => $("#"+id).value.trim();
@@ -2429,14 +2506,46 @@ async function render(){
           if(!isHist && !$("#n_consent").checked){
             $("#nErr").innerHTML = `<div class="err">${t("The customer must be shown the privacy notice and agree before their details can be saved.")}</div>`; return;
           }
+          const chv = $("#n_channel").value;
+          const gy = $("#n_gy").value, wy = $("#n_wy").value;
+          if(chv === "project" && (gy === "" || wy === "" || +gy < 0 || +gy > 30 || +wy < 0 || +wy > 30)){
+            $("#nErr").innerHTML = `<div class="err">${t("For a Project, enter the guarantee and warranty years (0 to 30).")}</div>`; return;
+          }
+          $("#nErr").innerHTML = "";
+
+          /* Duplicate warning: shown once, then "Register anyway" goes ahead. */
+          if(!dupConfirmed){
+            let dups = [];
+            try { dups = await DataSource.findDuplicates({ phone: v("n_phone"), address1: v("n_addr1"),
+                                                           postcode: v("n_postcode"), serial: v("n_serial") }); }
+            catch(e){ dups = []; }   // never block a registration because the check failed
+            if(dups.length){
+              const reasonText = { "same serial number": t("same serial number"),
+                                   "same site address": t("same site address"),
+                                   "same phone number": t("same phone number") };
+              $("#nDup").innerHTML = `<div class="dupwarn">
+                <b>${t("Possible duplicate — please check before saving")}</b>
+                <ul>${dups.slice(0, 8).map(d => `<li><a href="#/admin/${d.id}" target="_blank" rel="noopener">${esc(d.warranty_no)}</a>
+                  · ${esc(d.customer_name)}${d.site_address ? " · " + esc(d.site_address) : ""}
+                  <span class="pill a">${esc(reasonText[d.reason] || d.reason)}</span></li>`).join("")}</ul>
+                <div class="tiny muted">${t("If this is a different installation, press the button again to register it anyway.")}</div></div>`;
+              $("#nGo").textContent = t("Register anyway");
+              dupConfirmed = true;
+              return;
+            }
+          }
           const btn = $("#nGo"); btn.disabled = true; btn.textContent = "Saving…";
           try{
             const row = await DataSource.createWarranty({
               name:v("n_name"), phone:normalizePhone(v("n_phone")) || v("n_phone"), email:v("n_email"),
               address1:v("n_addr1"), address2:v("n_addr2"), postcode:v("n_postcode"),
               area:v("n_area"), state:$("#n_state").value, installDate:v("n_date"), model:$("#n_model").value,
-              serial:v("n_serial"), channel:$("#n_channel").value,
-              dealer:v("n_dealer"), installer:v("n_installer"),
+              serial:normalizeSerial(v("n_serial")), channel:chv,
+              dealer:(chv === "dealer" || chv === "contractor") ? v("n_dealer") : "",
+              installer:v("n_installer"),
+              projectName: chv === "project" ? v("n_proj") : "",
+              guaranteeYears: chv === "project" ? Number(gy) : null,
+              warrantyYears:  chv === "project" ? Number(wy) : null,
               consent: !isHist,
               historical: isHist,
               warrantyNo: isHist ? v("n_wn") : null
