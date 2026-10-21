@@ -792,7 +792,8 @@ let LANG = localStorage.getItem("mysolar_lang") || "en";
 const ZH = {
   "Warranty registry":"保修记录","Register an installation":"登记新安装",
   "Registered units":"已登记数量","Under guarantee":"保证期内",
-  "Under warranty":"保修期内","Back to all records":"返回全部记录",
+  "Under warranty":"保修期内","Go back and check":"返回核对",
+  "If this is a different installation, register it anyway.":"如果这是另一个安装，可以仍然登记。","Back to all records":"返回全部记录",
   "Showing removed records only. Open one and press Restore this record to bring it back.":"只显示已删除的记录。打开其中一笔并按「恢复此记录」即可恢复。",
   "To find it again later: Registry → Removed records.":"日后要找回：登记表 → 已删除的记录。",
   "This phone number already belongs to":"此电话号码已属于",
@@ -1854,7 +1855,6 @@ async function viewEdit(id){
     <div class="card card-pad">
       <h2>${t("Edit details")} <span class="mono" style="font-size:.9rem;color:var(--grey)">${esc(r.warrantyNo)}</span></h2>
       <p class="tiny muted" style="margin:4px 0 16px">${t("The warranty number and the customer's consent record cannot be changed. Every change is recorded on the record.")}</p>
-      <div id="eErr"></div>
       <fieldset class="addr">
         <legend>${t("Customer")}</legend>
         <p class="tiny muted" style="margin:0 0 8px">${t("Name, phone and email apply to every unit registered under this customer.")}</p>
@@ -1893,6 +1893,7 @@ async function viewEdit(id){
           <div class="field"><label for="e_wy">${t("Warranty (years)")}</label><input id="e_wy" type="number" min="0" max="30" value="${val(r.wOverride)}"></div></div>
       </fieldset>
       <p class="tiny muted">${t("Changing the install date, product or Project years recalculates the warranty and maintenance dates.")}</p>
+      <div id="eErr"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-p" id="eSave">${t("Save changes")}</button>
         <button class="btn btn-s" id="eCancel">${t("Cancel")}</button></div>
@@ -1921,7 +1922,7 @@ function wireEdit(id){
   $("#eCancel").onclick = () => { location.hash = "#/admin/" + id; };
   $("#eSave").onclick = async () => {
     const v = k => $("#"+k).value.trim();
-    const err = m => { $("#eErr").innerHTML = `<div class="err">${esc(m)}</div>`; };
+    const err = m => { showMsg("eErr", `<div class="err">${esc(m)}</div>`); };
     if(!v("e_name") || !v("e_phone") || !v("e_date")) return err(t("Name, phone and install date are required."));
     if(!normalizePhone(v("e_phone"))) return err(t("Please enter a valid phone number, for example 012-345 6789. For a number outside Malaysia, start with +"));
     if(v("e_postcode") && !/^\d{5}$/.test(v("e_postcode"))) return err(t("Postcode must be 5 digits."));
@@ -1969,7 +1970,6 @@ function viewNew(){
     <div class="card card-pad">
       <h2>${t("Register an installation")}</h2>
       <p class="tiny muted">${t("Warranty number is generated automatically.")}</p>
-      <div id="nDup"></div><div id="nErr"></div>
 
       <div class="consent" style="background:var(--tint);margin:0 0 18px">
         <label style="display:flex;gap:10px;align-items:flex-start;font-family:var(--body);
@@ -2038,6 +2038,7 @@ function viewNew(){
         </div>
       </div>
 
+      <div id="nDup"></div><div id="nErr"></div>
       <button class="btn btn-p btn-full" id="nGo">${t("Register & generate warranty")}</button>
     </div></div>`;
 }
@@ -2541,6 +2542,37 @@ function showConfigWarning(){
 /* A pop-up, not just the red banner, so nobody books a job for a
    blacklisted customer without seeing it. Shown once each time the record
    is opened — not again every time the page refreshes after a save. */
+/* Put a message in a box next to the button and make sure it is on screen. */
+function showMsg(id, html){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.innerHTML = html;
+  if(html) el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+/* The duplicate warning as a pop-up, so it cannot be missed. */
+function duplicatePopup(innerHtml, onProceed){
+  const old = document.getElementById("dupPop"); if(old) old.remove();
+  const d = document.createElement("div");
+  d.id = "dupPop";
+  d.setAttribute("role", "alertdialog");
+  d.setAttribute("aria-modal", "true");
+  d.style.cssText = "position:fixed;inset:0;z-index:300;background:rgba(10,43,56,.55);display:flex;align-items:center;justify-content:center;padding:16px";
+  d.innerHTML = `<div class="card" style="max-width:520px;width:100%;max-height:90vh;overflow:auto;border-top:6px solid var(--amber)">
+      <div class="card-pad">${innerHtml}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+          <button class="btn btn-s" id="dupBack" style="flex:1">${t("Go back and check")}</button>
+          <button class="btn btn-p" id="dupGo" style="flex:1">${t("Register anyway")}</button></div>
+      </div></div>`;
+  document.body.appendChild(d);
+  const close = () => { d.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = e => { if(e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  d.querySelector("#dupBack").onclick = close;
+  d.querySelector("#dupGo").onclick = () => { close(); onProceed(); };
+  d.querySelector("#dupBack").focus();
+}
+
 let BL_POPUP_FOR = null;
 function blacklistPopup(r){
   if(!r || !r.blacklisted || String(BL_POPUP_FOR) === String(r.id)) return;
@@ -2577,6 +2609,7 @@ async function render(){
   if(!/^#\/admin\/\d+$/.test(route())){
     BL_POPUP_FOR = null;
     const p = document.getElementById("blPop"); if(p) p.remove();
+    const dp = document.getElementById("dupPop"); if(dp) dp.remove();
   }
   showConfigWarning();
   const r = route(), app = $("#app");
@@ -2668,24 +2701,24 @@ async function render(){
           const v = id => $("#"+id).value.trim();
           const isHist = $("#n_hist").checked;
           if(!v("n_name") || !v("n_phone") || !v("n_date")){
-            $("#nErr").innerHTML = `<div class="err">${t("Name, phone and install date are required.")}</div>`; return;
+            showMsg("nErr", `<div class="err">${t("Name, phone and install date are required.")}</div>`); return;
           }
           if(!normalizePhone(v("n_phone"))){
-            $("#nErr").innerHTML = `<div class="err">${t("Please enter a valid phone number, for example 012-345 6789. For a number outside Malaysia, start with +")}</div>`; return;
+            showMsg("nErr", `<div class="err">${t("Please enter a valid phone number, for example 012-345 6789. For a number outside Malaysia, start with +")}</div>`); return;
           }
           if(!isHist && !v("n_addr1")){
-            $("#nErr").innerHTML = `<div class="err">${t("Address 1 of the installation site is required.")}</div>`; return;
+            showMsg("nErr", `<div class="err">${t("Address 1 of the installation site is required.")}</div>`); return;
           }
           if(v("n_postcode") && !/^\d{5}$/.test(v("n_postcode"))){
-            $("#nErr").innerHTML = `<div class="err">${t("Postcode must be 5 digits.")}</div>`; return;
+            showMsg("nErr", `<div class="err">${t("Postcode must be 5 digits.")}</div>`); return;
           }
           if(!isHist && !$("#n_consent").checked){
-            $("#nErr").innerHTML = `<div class="err">${t("The customer must be shown the privacy notice and agree before their details can be saved.")}</div>`; return;
+            showMsg("nErr", `<div class="err">${t("The customer must be shown the privacy notice and agree before their details can be saved.")}</div>`); return;
           }
           const chv = $("#n_channel").value;
           const gy = $("#n_gy").value, wy = $("#n_wy").value;
           if(chv === "project" && (gy === "" || wy === "" || +gy < 0 || +gy > 30 || +wy < 0 || +wy > 30)){
-            $("#nErr").innerHTML = `<div class="err">${t("For a Project, enter the guarantee and warranty years (0 to 30).")}</div>`; return;
+            showMsg("nErr", `<div class="err">${t("For a Project, enter the guarantee and warranty years (0 to 30).")}</div>`); return;
           }
           $("#nErr").innerHTML = "";
 
@@ -2699,7 +2732,7 @@ async function render(){
               const reasonText = { "same serial number": t("same serial number"),
                                    "same site address": t("same site address"),
                                    "same phone number": t("same phone number") };
-              $("#nDup").innerHTML = `<div class="dupwarn">
+              const dupHtml = `<div class="dupwarn">
                 <b>${t("Possible duplicate — please check before saving")}</b>
                 <ul>${dups.slice(0, 8).map(d => `<li><a href="#/admin/${d.id}" target="_blank" rel="noopener">${esc(d.warranty_no)}</a>
                   · ${esc(d.customer_name)}${d.site_address ? " · " + esc(d.site_address) : ""}
@@ -2713,8 +2746,12 @@ async function render(){
                     : "";
                 })()}
                 <div class="tiny muted">${t("If this is a different installation, press the button again to register it anyway.")}</div></div>`;
+              $("#nDup").innerHTML = dupHtml;            // stays beside the button after the pop-up closes
               $("#nGo").textContent = t("Register anyway");
               dupConfirmed = true;
+              duplicatePopup(dupHtml.replace(`<div class="tiny muted">${t("If this is a different installation, press the button again to register it anyway.")}</div>`,
+                                             `<div class="tiny muted">${t("If this is a different installation, register it anyway.")}</div>`),
+                             () => $("#nGo").click());
               return;
             }
           }
@@ -2747,7 +2784,7 @@ async function render(){
             });
             location.hash = "#/admin/" + row.id;
           }catch(e){
-            $("#nErr").innerHTML = `<div class="err">Couldn't save.<br><span class="tiny mono">${esc(e.message||e)}</span></div>`;
+            showMsg("nErr", `<div class="err">Couldn't save.<br><span class="tiny mono">${esc(e.message||e)}</span></div>`);
             btn.disabled = false; btn.textContent = "Register & generate warranty";
           }
         };
