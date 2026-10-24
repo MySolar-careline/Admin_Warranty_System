@@ -412,6 +412,7 @@ function rowFromView(v, service = [], claims = []) {
                                  fault: s.is_fault_visit === true,
                                  parts: s.parts_replaced || "",
                                  secondary: s.secondary_serial || "",
+                                 secondaryEnd: s.secondary_warranty_end || null,
                                  chargeable: s.chargeable === true,
                                  amount: s.amount,
                                  payStatus: s.payment_status || "not_applicable",
@@ -694,6 +695,20 @@ const DataSource = {
     if (error) throw error;
     return Array.isArray(data) ? data : [];
   },
+  async deleteInstallationPermanently(id, confirmNo, reason){
+    const { data, error } = await sb.rpc("delete_installation_permanently",
+      { p_id: Number(id), p_confirm: confirmNo, p_reason: reason });
+    if (error) throw error;
+    clearListCache();
+    return data;
+  },
+
+  async changePassword(pw){
+    const { data, error } = await sb.auth.updateUser({ password: pw, data: { pw_set: true } });
+    if (error) throw error;
+    return data.user;
+  },
+
   async removeInstallation(id, reason){
     const { error } = await sb.rpc("remove_installation", { p_id: Number(id), p_reason: reason });
     if (error) throw error;
@@ -900,7 +915,23 @@ const ZH = {
   "No — under warranty":"否 — 保修内","Yes — customer charged":"是 — 向客户收费",
   "Not paid yet":"尚未付款","Partly paid":"部分付款","Paid in full":"已付清",
   "Guarantee":"保证期","Warranty":"保修期","Guarantee ends":"保证期至",
-  "Warranty ends":"保修期至","yr":"年","Stay signed in":"保持登入",
+  "Warranty ends":"保修期至",
+  "warranty until":"保修至","Warranty years after guarantee":"保证期后保修（年）",
+  "Delete permanently":"永久删除","Delete this record permanently?":"永久删除此记录？",
+  "This deletes the unit, its service history, reminders, maintenance schedule and change history. If it is the customer's only unit, the customer's details are deleted too.":"此操作将删除该机组及其服务记录、提醒、保养计划和修改记录。如果这是该客户唯一的机组，客户资料也会一并删除。",
+  "This cannot be undone.":"此操作无法撤销。","Type the warranty number to confirm":"请输入保修编号以确认",
+  "e.g. Customer asked for their data to be deleted":"例如：客户要求删除其资料",
+  "Deleting…":"删除中…","Deleted permanently":"已永久删除",
+  "Your account":"我的账户","Signed in as":"登入账号","New password":"新密码","Type it again":"再输入一次",
+  "Show password":"显示密码","Save my password":"保存密码","Saving…":"保存中…","Change my password":"更改密码",
+  "Welcome. Please choose your own password before you continue. Only you will know it — not even the person who set up your account.":"欢迎！继续之前请先设定您自己的密码。只有您知道这个密码，连为您开设账户的人也不会知道。",
+  "At least 10 characters, with both letters and numbers. Do not use your email address.":"至少10个字符，须包含字母和数字。请勿使用您的电邮地址。",
+  "The password must be at least 10 characters.":"密码至少需要10个字符。","Use both letters and numbers.":"请同时使用字母和数字。",
+  "Do not use your email address in the password.":"密码中请勿包含您的电邮地址。","The two passwords do not match.":"两次输入的密码不一致。",
+  "Password saved. Use it the next time you sign in.":"密码已保存。下次登入时请使用新密码。",
+  "Replacement tank warranty (years)":"更换水箱保修期（年）",
+  "A replacement tank recorded on a service visit is under warranty for this many years from the visit date.":"服务记录中更换的水箱，自上门日期起享有此年数的保修。",
+  "Check valve replacement due":"止回阀更换","yr":"年","Stay signed in":"保持登入",
   "Signing you out shortly for security.":"为了安全，系统即将自动登出。",
   "All systems":"全部系统","Repeated repairs":"重复维修","Owe money":"欠款客户",
   "Out of warranty":"已过保修","More filters":"更多筛选","Clear all":"清除",
@@ -1060,7 +1091,7 @@ function coverage(row){
   const gEnd = row.guaranteeEnd ? new Date(row.guaranteeEnd+"T00:00:00")
              : addYears(row.installDate, Number(m.guaranteeYears) || 0);
   const wEnd = row.warrantyEnd  ? new Date(row.warrantyEnd+"T00:00:00")
-             : addYears(row.installDate, Number(m.warrantyYears)  || 0);
+             : addYears(row.installDate, (Number(m.guaranteeYears) || 0) + (Number(m.warrantyYears) || 0));
   const now = new Date();
   let state,label,cls;
   if(row.voided){ state="voided"; label="Removed"; cls="n"; }
@@ -1356,7 +1387,7 @@ function customerCard(row){
       <dt>${t("Serial number")}</dt><dd>${esc(row.serial||"—")}</dd>
       <dt>${t("Installed")}</dt><dd>${fmt(row.installDate)}</dd>
       ${c.model.guaranteeYears === 0 ? "" : `<dt>${t("Guarantee")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>`}
-      <dt>${t("Warranty")}${c.model.warrantyYears ? ` (${c.model.warrantyYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.wEnd)}</dd>
+      <dt>${t("Warranty")}${warrantyTerm(c.model)}</dt><dd>${fmt(c.wEnd)}</dd>
     </dl>
     <div class="svc"><h3 style="margin-bottom:9px">${t("Service history")}</h3>${svc}</div>
     <div class="card-pad" style="border-top:1px solid var(--line)">
@@ -1384,7 +1415,8 @@ let PAGE = 0;
 let FILTERS_OPEN = false;
 const PER_PAGE = 50;
 let SEARCH_TIMER = null;
-let LIST_DRAW = 0;      // which list redraw is the latest (older ones are dropped)
+let LIST_DRAW = 0;
+let FLASH = "";        // one-off message shown at the top of the registry      // which list redraw is the latest (older ones are dropped)
 
 /* Postcode: digits only, at most `max`. The box is only rewritten when
    something other than a digit was typed, and the cursor stays where it was.
@@ -1439,7 +1471,9 @@ async function viewList(){
         ? t("No installations registered yet.")
         : t("No records match those filters.")}</td></tr>`;
 
+  const flash = FLASH; FLASH = "";
   return `<div class="page">
+    ${flash ? `<div class="ok">${esc(flash)}</div>` : ""}
     <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px">
       <h1>${t("Customers & Systems")}</h1>
       <a class="btn btn-p" href="#/admin/new">${t("Register an installation")}</a>
@@ -1585,6 +1619,21 @@ function latestSecondary(r){
   return list.slice().sort((a,b) => String(a.date).localeCompare(String(b.date))).pop();
 }
 
+/* A replacement tank has its own warranty from the visit date (file 31). */
+function tankWarranty(s, withPill = true){
+  if(!s || !s.secondary || !s.secondaryEnd) return "";
+  const over = new Date(s.secondaryEnd + "T00:00:00") <= new Date();
+  return `${t("warranty until")} ${fmt(s.secondaryEnd)}` + (withPill
+    ? ` <span class="pill ${over ? "x" : "g"}">${over ? t("Expired") : t("Under warranty")}</span>` : "");
+}
+
+/* "(1 + 9 yr)": the warranty starts when the guarantee ends (file 31). */
+function warrantyTerm(m){
+  const g = Number(m.guaranteeYears), w = Number(m.warrantyYears);
+  if(!w && !g) return "";
+  return g > 0 ? ` (${g} + ${w} ${t("yr")})` : ` (${w} ${t("yr")})`;
+}
+
 /* One unit's history on paper, for the technician to take on the next call.
    Removed visits are left off. Prints only this record. */
 function printHistory(r){
@@ -1602,7 +1651,7 @@ function printHistory(r){
         ${kv(t("Warranty no"), esc(r.warrantyNo))}
         ${kv(t("Model"), esc((c.model.brand ? c.model.brand + " · " : "") + c.model.name))}
         ${kv(t("Serial number"), esc(r.serial || "—"))}
-        ${sec ? kv(t("Replacement tank S/N"), esc(sec.secondary) + " (" + fmt(sec.date) + ")") : ""}
+        ${sec ? kv(t("Replacement tank S/N"), esc(sec.secondary) + " (" + fmt(sec.date) + ")" + (sec.secondaryEnd ? " — " + tankWarranty(sec, false) : "")) : ""}
         ${kv(t("Installed"), fmt(r.installDate))}
         ${c.model.guaranteeYears === 0 ? "" : kv(t("Guarantee ends"), fmt(c.gEnd))}
         ${kv(t("Warranty ends"), fmt(c.wEnd))}
@@ -1621,7 +1670,7 @@ function printHistory(r){
           <th>${esc(t("Parts replaced"))}</th><th>${esc(t("Price charged"))}</th><th>${esc(t("Notes"))}</th></tr></thead><tbody>
         ${visits.map(s => `<tr><td>${fmt(s.date)}</td><td>${esc(s.type)}${s.fault ? " (" + esc(t("Fault")) + ")" : ""}</td>
           <td>${esc(s.tech || "—")}</td>
-          <td>${esc(s.parts || "—")}${s.secondary ? "<br>" + esc(t("Replacement tank S/N")) + ": " + esc(s.secondary) : ""}</td>
+          <td>${esc(s.parts || "—")}${s.secondary ? "<br>" + esc(t("Replacement tank S/N")) + ": " + esc(s.secondary) + (s.secondaryEnd ? "<br>" + tankWarranty(s, false) : "") : ""}</td>
           <td>${priceText(s)}</td><td>${esc(s.note || "")}</td></tr>`).join("")}
         </tbody></table>` : `<p>${esc(t("No service visits recorded."))}</p>`}
       <p class="ph-foot">${esc(t("Internal record — contains customer personal data. Do not leave it with anyone outside MySolar."))}</p>
@@ -1664,7 +1713,8 @@ async function viewDetail(id){
         <dt>${t("Team")}</dt><dd>${esc(s.tech || "—")}</dd>
         <dt>${t("Parts replaced")}</dt><dd>${esc(s.parts || "—")}</dd>
         <dt>${t("Price charged")}</dt><dd>${priceText(s)}</dd>
-        ${s.secondary ? `<dt>${t("Replacement tank S/N")}</dt><dd class="mono">${esc(s.secondary)}</dd>` : ""}
+        ${s.secondary ? `<dt>${t("Replacement tank S/N")}</dt><dd><span class="mono">${esc(s.secondary)}</span>${
+            s.secondaryEnd && !s.voided ? `<div class="tiny">${tankWarranty(s)}</div>` : ""}</dd>` : ""}
         ${s.note ? `<dt>${t("Notes")}</dt><dd>${esc(s.note)}</dd>` : ""}
       </dl>
       ${s.voided
@@ -1778,7 +1828,9 @@ async function viewDetail(id){
           <div class="tiny muted">${t("Removed by")} ${esc(r.voidedBy || "—")}${r.voidedAt ? " · " + fmt(String(r.voidedAt).slice(0,10)) : ""} — ${esc(r.voidedReason || "")}</div>
           <div class="tiny muted">${t("It no longer appears in the registry, searches or reminders.")}${
             IS_ADMIN ? " " + t("To find it again later: Registry → Removed records.") : ""}</div></div>
-        ${IS_ADMIN ? `<button class="btn btn-s" id="recRestore">${t("Restore this record")}</button>` : ""}
+        ${IS_ADMIN ? `<span style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-s" id="recRestore">${t("Restore this record")}</button>
+          <button class="btn btn-s" id="recDelete" style="color:var(--red)">${t("Delete permanently")}</button></span>` : ""}
       </div></div>` : ""}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin:-6px 0 18px">
       ${!r.voided ? `<button class="btn btn-s" id="recEdit" style="padding:7px 13px;font-size:.85rem">${t("Edit details")}</button>` : ""}
@@ -1795,12 +1847,13 @@ async function viewDetail(id){
             <div class="barlbl"><span>${fmt(r.installDate)}</span><span>${fmt(c.wEnd)}</span></div></div>
           <dl class="kv" style="padding-top:6px">
             <dt>${t("Model")}</dt><dd>${esc(c.model.name)}</dd>
-            ${latestSecondary(r) ? `<dt>${t("Replacement tank S/N")}</dt><dd class="mono">${esc(latestSecondary(r).secondary)} <span class="tiny muted">(${fmt(latestSecondary(r).date)})</span></dd>` : ""}
+            ${latestSecondary(r) ? `<dt>${t("Replacement tank S/N")}</dt><dd><span class="mono">${esc(latestSecondary(r).secondary)}</span> <span class="tiny muted">(${fmt(latestSecondary(r).date)})</span>${
+                latestSecondary(r).secondaryEnd ? `<div class="tiny">${tankWarranty(latestSecondary(r))}</div>` : ""}</dd>` : ""}
             ${c.model.brand ? `<dt>${t("Brand")}</dt><dd>${esc(c.model.brand)}</dd>` : ""}
             ${c.model.category ? `<dt>${t("Category")}</dt><dd>${esc(c.model.category)}</dd>` : ""}
             <dt>${t("Installed")}</dt><dd>${fmt(r.installDate)}</dd>
             ${c.model.guaranteeYears === 0 ? "" : `<dt>${t("Guarantee ends")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>`}
-            <dt>${t("Warranty ends")}${c.model.warrantyYears ? ` (${c.model.warrantyYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.wEnd)}</dd>
+            <dt>${t("Warranty ends")}${warrantyTerm(c.model)}</dt><dd>${fmt(c.wEnd)}</dd>
           </dl>
           ${c.model.note ? `<div class="tiny muted" style="padding:0 18px 14px">${t("Warranty note")}: ${esc(c.model.note)}</div>` : ""}</div>
         <div class="card"><div class="sec-h">
@@ -1906,7 +1959,7 @@ async function viewEdit(id){
         <div class="field"><label for="e_proj">${t("Project name (optional)")}</label><input id="e_proj" value="${val(r.projectName)}"></div>
         <div class="row2">
           <div class="field"><label for="e_gy">${t("Guarantee (years)")}</label><input id="e_gy" type="number" min="0" max="30" value="${val(r.gOverride)}"></div>
-          <div class="field"><label for="e_wy">${t("Warranty (years)")}</label><input id="e_wy" type="number" min="0" max="30" value="${val(r.wOverride)}"></div></div>
+          <div class="field"><label for="e_wy">${t("Warranty years after guarantee")}</label><input id="e_wy" type="number" min="0" max="30" value="${val(r.wOverride)}"></div></div>
       </fieldset>
       <p class="tiny muted">${t("Changing the install date, product or Project years recalculates the warranty and maintenance dates.")}</p>
       <div id="eErr"></div>
@@ -2031,7 +2084,7 @@ function viewNew(){
         <div class="field"><label for="n_proj">${t("Project name (optional)")}</label><input id="n_proj"></div>
         <div class="row2">
           <div class="field"><label for="n_gy">${t("Guarantee (years)")}</label><input id="n_gy" type="number" min="0" max="30" step="1"></div>
-          <div class="field"><label for="n_wy">${t("Warranty (years)")}</label><input id="n_wy" type="number" min="0" max="30" step="1"></div></div>
+          <div class="field"><label for="n_wy">${t("Warranty years after guarantee")}</label><input id="n_wy" type="number" min="0" max="30" step="1"></div></div>
         <p class="tiny muted" style="margin:0 0 10px">${t("Filled in from the product's standard terms. Change them to match this project's agreement.")}</p>
       </fieldset>
       <div class="field"><label for="n_installer">${t("Installed by")}</label><input id="n_installer"></div>
@@ -2251,6 +2304,11 @@ async function viewSettings(){
     <h1>${t("Settings")}</h1>
     <p class="tiny muted" style="margin:6px 0 22px">${t("Changes apply the next time the follow-up list is refreshed. Nothing already on the list is removed.")}</p>
     <div id="setMsg"></div>
+
+    <div class="card card-pad" style="margin-bottom:22px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><b>${t("Your account")}</b><div class="tiny muted">${t("Signed in as")} ${esc(USER?.email || "")}</div></div>
+      <a class="btn btn-s" href="#/admin/account">${t("Change my password")}</a>
+    </div>
 
     <div class="card" style="margin-bottom:22px">
       <div class="sec-h">${t("Alerts — when should the system flag something?")}</div>
@@ -2589,6 +2647,54 @@ function duplicatePopup(innerHtml, onProceed){
   d.querySelector("#dupBack").focus();
 }
 
+/* Permanent delete (file 31). Admin only, removed records only, and the
+   warranty number must be typed — the database checks all three again. */
+function deletePopup(r){
+  if(!r) return;
+  const old = document.getElementById("delPop"); if(old) old.remove();
+  const d = document.createElement("div");
+  d.id = "delPop";
+  d.setAttribute("role", "alertdialog");
+  d.setAttribute("aria-modal", "true");
+  d.setAttribute("aria-labelledby", "delPopT");
+  d.style.cssText = "position:fixed;inset:0;z-index:300;background:rgba(10,43,56,.55);display:flex;align-items:center;justify-content:center;padding:16px";
+  d.innerHTML = `<div class="card" style="max-width:480px;width:100%;max-height:90vh;overflow:auto;border-top:6px solid var(--red)">
+      <div class="card-pad">
+        <h3 id="delPopT" style="color:var(--red);margin-bottom:8px">${t("Delete this record permanently?")}</h3>
+        <p style="margin:0">${t("This deletes the unit, its service history, reminders, maintenance schedule and change history. If it is the customer's only unit, the customer's details are deleted too.")}</p>
+        <p style="margin:8px 0 0"><b>${t("This cannot be undone.")}</b></p>
+        <div class="field" style="margin-top:14px"><label for="delNo">${t("Type the warranty number to confirm")}: <span class="mono">${esc(r.warrantyNo)}</span></label>
+          <input id="delNo" autocomplete="off" spellcheck="false"></div>
+        <div class="field"><label for="delWhy">${t("Reason")}</label>
+          <input id="delWhy" placeholder="${t("e.g. Customer asked for their data to be deleted")}"></div>
+        <div id="delErr"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+          <button class="btn btn-s" id="delBack" style="flex:1">${t("Cancel")}</button>
+          <button class="btn btn-p" id="delGo" style="flex:1;background:var(--red);border-color:var(--red)" disabled>${t("Delete permanently")}</button></div>
+      </div></div>`;
+  document.body.appendChild(d);
+  const close = () => { d.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = e => { if(e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  const no = d.querySelector("#delNo"), why = d.querySelector("#delWhy"), go = d.querySelector("#delGo");
+  const check = () => { go.disabled = !(no.value.trim().toUpperCase() === String(r.warrantyNo).toUpperCase() && why.value.trim().length >= 3); };
+  no.addEventListener("input", check); why.addEventListener("input", check);
+  d.querySelector("#delBack").onclick = close;
+  go.onclick = async () => {
+    go.disabled = true; go.textContent = t("Deleting…");
+    try{
+      await DataSource.deleteInstallationPermanently(r.id, no.value.trim(), why.value.trim());
+      close();
+      FLASH = `${t("Deleted permanently")}: ${r.warrantyNo}`;
+      location.hash = "#/admin/list";
+    }catch(e){
+      d.querySelector("#delErr").innerHTML = `<div class="err">${esc(e.message || e)}</div>`;
+      go.textContent = t("Delete permanently"); check();
+    }
+  };
+  no.focus();
+}
+
 let BL_POPUP_FOR = null;
 function blacklistPopup(r){
   if(!r || !r.blacklisted || String(BL_POPUP_FOR) === String(r.id)) return;
@@ -2617,6 +2723,62 @@ function blacklistPopup(r){
   document.addEventListener("keydown", onKey);
   d.querySelector("#blPopOk").onclick = close;
   d.querySelector("#blPopOk").focus();
+}
+
+/* ---------- your account: choose your own password ---------- */
+const mustSetPassword = () => !!USER && !(USER.user_metadata && USER.user_metadata.pw_set === true);
+
+function viewAccount(){
+  const forced = mustSetPassword();
+  return `<div class="page" style="max-width:540px">
+    <h1>${t("Your account")}</h1>
+    ${forced ? `<div class="ok" style="background:var(--tint);color:var(--blue-deep);border-color:var(--line);margin-top:12px">${
+      t("Welcome. Please choose your own password before you continue. Only you will know it — not even the person who set up your account.")}</div>` : ""}
+    <div class="card card-pad" style="margin-top:14px">
+      <p class="tiny muted" style="margin:0 0 12px">${t("Signed in as")} <b>${esc(USER?.email || "")}</b></p>
+      <div class="field"><label for="acPw">${t("New password")}</label>
+        <input id="acPw" type="password" autocomplete="new-password"></div>
+      <div class="field"><label for="acPw2">${t("Type it again")}</label>
+        <input id="acPw2" type="password" autocomplete="new-password"></div>
+      <label style="display:flex;gap:8px;align-items:center;margin:-4px 0 10px;text-transform:none;letter-spacing:0;font-family:var(--sans);font-size:.88rem;cursor:pointer">
+        <input type="checkbox" id="acShow" style="width:16px;height:16px"> ${t("Show password")}</label>
+      <p class="tiny muted" style="margin:0 0 12px">${t("At least 10 characters, with both letters and numbers. Do not use your email address.")}</p>
+      <div id="acMsg"></div>
+      <button class="btn btn-p btn-full" id="acGo">${t("Save my password")}</button>
+    </div></div>`;
+}
+
+function passwordProblem(pw, pw2){
+  const local = String(USER?.email || "").split("@")[0].toLowerCase();
+  if(pw.length < 10) return t("The password must be at least 10 characters.");
+  if(!/[A-Za-z]/.test(pw) || !/\d/.test(pw)) return t("Use both letters and numbers.");
+  if(local.length >= 4 && pw.toLowerCase().includes(local)) return t("Do not use your email address in the password.");
+  if(pw !== pw2) return t("The two passwords do not match.");
+  return "";
+}
+
+function wireAccount(){
+  const pw = $("#acPw"), pw2 = $("#acPw2"), go = $("#acGo"), msg = $("#acMsg");
+  $("#acShow").onchange = e => { pw.type = pw2.type = e.target.checked ? "text" : "password"; };
+  const save = async () => {
+    const bad = passwordProblem(pw.value, pw2.value);
+    if(bad){ msg.innerHTML = `<div class="err">${esc(bad)}</div>`; return; }
+    const forced = mustSetPassword();
+    go.disabled = true; go.textContent = t("Saving…");
+    try{
+      USER = await DataSource.changePassword(pw.value);
+      pw.value = pw2.value = "";
+      msg.innerHTML = `<div class="ok">${t("Password saved. Use it the next time you sign in.")}</div>`;
+      go.textContent = t("Save my password"); go.disabled = false;
+      if(forced) setTimeout(() => { location.hash = "#/admin/list"; }, 1200);
+    }catch(e){
+      msg.innerHTML = `<div class="err">${esc(e.message || e)}</div>`;
+      go.textContent = t("Save my password"); go.disabled = false;
+    }
+  };
+  go.onclick = save;
+  pw2.addEventListener("keydown", e => { if(e.key === "Enter") save(); });
+  pw.focus();
 }
 
 async function render(){
@@ -2659,6 +2821,11 @@ async function render(){
       $("#pw").addEventListener("keydown", e => { if(e.key==="Enter") go(); });
       return;
     }
+
+    /* First sign-in, or an admin reset the password: the person chooses their
+       own password before anything else, so nobody else ever knows it. */
+    if(mustSetPassword() && r !== "#/admin/account"){ location.replace("#/admin/account"); return; }
+    if(r === "#/admin/account"){ app.innerHTML = viewAccount(); wireAccount(); return; }
 
     app.innerHTML = SKELETON;
     try{
@@ -2975,6 +3142,8 @@ async function render(){
           try { await DataSource.restoreInstallation(m[1]); render(); }
           catch(e){ alert(e.message || e); }
         };
+        const dlBtn = $("#recDelete");
+        if(dlBtn) dlBtn.onclick = () => deletePopup(CURRENT_RECORD);
 
         /* Edit / remove / restore on each visit row.
            Removing is a soft delete — the record stays, greyed out, with the
