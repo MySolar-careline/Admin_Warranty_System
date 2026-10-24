@@ -218,6 +218,22 @@ fieldset.addr legend{font-size:.82rem;font-weight:600;color:var(--grey);padding:
 .privacy-grid p{font-size:.93rem}
 @media(max-width:820px){.privacy-grid{grid-template-columns:1fr}}
 .spin{padding:50px 20px;text-align:center;color:var(--grey);font-family:var(--mono);font-size:.85rem;letter-spacing:.1em;text-transform:uppercase}
+/* Activity log: one card per line on a phone instead of a wide table. */
+@media (max-width:640px){
+  table.act thead{display:none}
+  table.act, table.act tbody{display:block}
+  table.act tr{display:block;padding:12px 14px;border-bottom:1px solid var(--line)}
+  table.act td{display:block;border:0;padding:2px 0;min-width:0!important}
+  table.act td.act-when{font-size:.8rem;color:var(--grey)}
+  table.act td.act-when .src{display:inline;margin-left:6px}
+}
+/* Registration: one line per unit (file 33). Product above serial on a phone. */
+.unit-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto;gap:10px;align-items:end;
+  border-bottom:1px dashed var(--line);padding-bottom:6px;margin-bottom:8px}
+@media (max-width:560px){
+  .unit-row{grid-template-columns:minmax(0,1fr) auto}
+  .unit-row .u-model{grid-column:1 / -1}
+}
 </style>
 </head>
 <body>
@@ -304,7 +320,7 @@ function inDaysISO(n){
 
 /* Fields a person may have typed into. Checked before anything that rebuilds
    the page, so a half-written note is never thrown away without asking. */
-const DRAFT_FIELDS = ["sv_note","sv_tech","sv_parts","sv_amt",
+const DRAFT_FIELDS = ["sv_note","sv_tech","sv_parts","sv_amt","sv_form","sv_inv","n_do",
                       "n_name","n_phone","n_addr1","n_addr2","n_postcode","n_area","n_serial","wn","pn"];
 /* The edit form starts filled in, so "something typed" there means changed
    from what was loaded — checked separately in draftInProgress(). */
@@ -413,6 +429,7 @@ function rowFromView(v, service = [], claims = []) {
                                  parts: s.parts_replaced || "",
                                  secondary: s.secondary_serial || "",
                                  secondaryEnd: s.secondary_warranty_end || null,
+                                 formNo: s.service_form_no || "", invoiceNo: s.invoice_no || "",
                                  chargeable: s.chargeable === true,
                                  amount: s.amount,
                                  payStatus: s.payment_status || "not_applicable",
@@ -501,7 +518,7 @@ const DataSource = {
       sb.from("service_visits").select("*").eq("installation_id", id).order("visit_date"),
       sb.from("claims").select("*").eq("installation_id", id).order("raised_on"),
       sb.from("v_maintenance").select("*").eq("installation_id", id).order("sort_order"),
-      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override").eq("id", id).single(),
+      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override,do_no,group_key,customer_id").eq("id", id).single(),
       sb.from("installation_edits").select("*").eq("installation_id", id).order("edited_at", { ascending: false })
     ]);
     if (vRes.error || !vRes.data) return null;
@@ -521,6 +538,18 @@ const DataSource = {
     row.gOverride   = fRes.data ? fRes.data.guarantee_years_override : null;
     row.wOverride   = fRes.data ? fRes.data.warranty_years_override  : null;
     row.edits       = (eRes && !eRes.error && eRes.data) ? eRes.data : [];
+    row.doNo        = fRes.data ? (fRes.data.do_no || "") : "";
+    row.groupKey    = fRes.data ? (fRes.data.group_key || "") : "";
+    /* The customer's other units: for "Units in this registration" and for
+       choosing which unit a visit belongs to (file 33). */
+    row.customerUnits = [];
+    const custId = fRes.data ? fRes.data.customer_id : vRes.data.customer_id;
+    if (custId != null) {
+      const { data: units } = await sb.from("installations")
+        .select("id,warranty_no,serial_no,model_code,group_key,voided,install_date")
+        .eq("customer_id", custId).order("install_date").order("id");
+      row.customerUnits = Array.isArray(units) ? units : [];
+    }
     REC_CACHE = { id, row, at: Date.now() };
     return row;
   },
@@ -543,35 +572,40 @@ const DataSource = {
     }};
   },
 
+  /* One or many units in one go, all or nothing (file 33). Returns the first
+     unit's record plus the list of every unit created. */
   async createWarranty(p){
-    const { data, error } = await sb.rpc("register_installation", {
-      p_name:p.name, p_phone:p.phone, p_email:p.email || null,
-      p_address:null, p_area:p.area || null,
+    const { data: made, error } = await sb.rpc("register_units", {
+      p_name:p.name, p_phone:p.phone,
       p_site_address1:p.address1 || null, p_site_address2:p.address2 || null,
       p_site_area:p.area || null, p_site_state:p.state || null,
       p_site_postcode:p.postcode || null,
-      p_model_code:p.model, p_serial_no:p.serial || null,
+      p_units: p.units.map(u => ({ model_code: u.model, serial_no: u.serial || null, warranty_no: u.warrantyNo || null })),
       p_install_date:p.installDate, p_channel:p.channel,
       p_dealer_name:p.dealer || null, p_installer:p.installer || null,
       p_consent: p.consent === true, p_notice_ver: 'v1',
       p_historical: p.historical === true,
-      p_warranty_no: p.warrantyNo || null,
       p_project_name: p.projectName || null,
       p_guarantee_years: p.guaranteeYears ?? null,
-      p_warranty_years:  p.warrantyYears ?? null
+      p_warranty_years:  p.warrantyYears ?? null,
+      p_do_no: p.doNo || null,
+      p_add_to: p.addTo ? Number(p.addTo) : null
     });
     if (error) throw error;
     clearListCache();
+    const data = made && made.length ? made[0].id : null;
     /* The record IS saved at this point. If reading it straight back fails,
        returning null here used to surface as "Couldn't save", and staff would
        register the same customer twice. Hand back enough to carry on. */
     let row = null;
     try { row = await this.getById(data, true); } catch(e) { row = null; }
-    return row || {
-      id: data, name: p.name, phone: p.phone, area: p.area, model: p.model,
+    row = row || {
+      id: data, name: p.name, phone: p.phone, area: p.area, model: p.units[0].model,
       warrantyNo: "", installDate: p.installDate, channel: p.channel,
       dealer: p.dealer, service: [], claims: [], maintenance: []
     };
+    row.created = made || [];
+    return row;
   },
 
   async addServiceVisit(id, visit){
@@ -589,7 +623,9 @@ const DataSource = {
       paid_on:         visit.paidOn || null,
       due_on:          visit.chargeable === true ? (visit.dueOn || null) : null,
       notes:           visit.note   || null,
-      secondary_serial: visit.secondary ? visit.secondary.trim().toUpperCase() : null
+      secondary_serial: visit.secondary ? visit.secondary.trim().toUpperCase() : null,
+      service_form_no: visit.formNo ? visit.formNo.trim() : null,
+      invoice_no:      visit.invoiceNo ? visit.invoiceNo.trim() : null
     });
     if (error) throw error;
     clearListCache();
@@ -671,7 +707,9 @@ const DataSource = {
       p_due_on: v.dueOn || null, p_notes: v.note,
       p_amount_paid: v.amountPaid != null && v.amountPaid !== "" ? Number(v.amountPaid) : null,
       p_paid_on: v.paidOn || null,
-      p_secondary_serial: v.secondary != null ? v.secondary : "" });
+      p_secondary_serial: v.secondary != null ? v.secondary : "",
+      p_service_form_no: v.formNo != null ? v.formNo : "",
+      p_invoice_no:      v.invoiceNo != null ? v.invoiceNo : "" });
     if (error) throw error;
     clearListCache();
   },
@@ -683,7 +721,8 @@ const DataSource = {
       p_model_code: p.model, p_serial_no: p.serial || null, p_install_date: p.installDate,
       p_channel: p.channel, p_dealer_name: p.dealer || null, p_installer: p.installer || null,
       p_project_name: p.projectName || null,
-      p_guarantee_years: p.guaranteeYears ?? null, p_warranty_years: p.warrantyYears ?? null });
+      p_guarantee_years: p.guaranteeYears ?? null, p_warranty_years: p.warrantyYears ?? null,
+      p_do_no: p.doNo != null ? p.doNo : null });
     if (error) throw error;
     clearListCache();
     REC_CACHE = { id: null, row: null, at: 0 };
@@ -701,6 +740,36 @@ const DataSource = {
     if (error) throw error;
     clearListCache();
     return data;
+  },
+
+  /* ---- activity log (file 32). Admins only; the database enforces it. ---- */
+  async listActivity(f, page, perPage){
+    let q = sb.from("activity_log").select("*", { count: "exact" })
+      .order("at", { ascending: false }).order("id", { ascending: false })
+      .range(page * perPage, page * perPage + perPage - 1);
+    if (f.from) q = q.gte("at", f.from + "T00:00:00+08:00");
+    if (f.to)   q = q.lt("at", nextDayISO(f.to) + "T00:00:00+08:00");
+    if (f.actor === "system") q = q.is("actor", null);
+    else if (f.actor) q = q.eq("actor", f.actor);
+    if (f.kind === "deletions") q = q.eq("action", "record_deleted");
+    else if (f.kind && ACTIVITY_KINDS[f.kind]) q = q.in("entity", ACTIVITY_KINDS[f.kind].tables);
+    if (f.inst) q = f.cust ? q.or(`installation_id.eq.${Number(f.inst)},and(customer_id.eq.${Number(f.cust)},installation_id.is.null)`)
+                           : q.eq("installation_id", Number(f.inst));
+    if (f.q) q = q.ilike("ref", "%" + f.q.replace(/[%_\\]/g, m => "\\" + m) + "%");
+    const { data, error, count } = await q;
+    if (error) throw error;
+    return { rows: data || [], total: count || 0 };
+  },
+
+  async activityActors(){
+    const { data, error } = await sb.rpc("activity_actors");
+    if (error) throw error;
+    return data || [];
+  },
+
+  /* Sign-in, sign-out, time-out, password change. Never blocks the person. */
+  async logEvent(ev){
+    try { await sb.rpc("log_session_event", { p_event: ev }); } catch(e) {}
   },
 
   async changePassword(pw){
@@ -916,7 +985,38 @@ const ZH = {
   "Not paid yet":"尚未付款","Partly paid":"部分付款","Paid in full":"已付清",
   "Guarantee":"保证期","Warranty":"保修期","Guarantee ends":"保证期至",
   "Warranty ends":"保修期至",
-  "warranty until":"保修至","Warranty years after guarantee":"保证期后保修（年）",
+  "warranty until":"保修至",
+  "DO No.":"送货单号","Delivery order number":"送货单号码","Units installed":"安装的机组","Add another unit":"再加一个机组",
+  "Paste a list of serial numbers":"贴上一组机身号",
+  "One serial number per line. Each becomes a unit with the product chosen in the last row.":"每行一个机身号。每个机身号会成为一个机组，产品与最后一行相同。",
+  "Add these units":"加入这些机组","Optional":"可不填",
+  "Each unit gets its own warranty number, coverage, maintenance schedule and service history. They are kept together as one registration, with the same customer, address and DO No.":"每个机组都有自己的保修编号、保修期、保养计划和服务记录，并作为同一笔登记保存在一起，使用相同的客户、地址和送货单号。",
+  "At most 200 units can be registered at once.":"每次最多可登记200个机组。","This serial number is entered more than once":"此机身号重复输入",
+  "Adding units to the registration of":"正在加入机组到此登记：","Name and phone stay the same. Everything else can be changed for the new units.":"姓名和电话不变，其余资料可为新机组更改。",
+  "Units in this registration":"此登记的机组","this unit":"此机组",
+  "Only this unit. Use Add another unit to register more units for this customer under the same DO No. and address.":"只有此机组。按「再加一个机组」可在相同送货单号和地址下为此客户登记更多机组。",
+  "Unit (serial number)":"机组（机身号）","no serial number":"无机身号","This customer has":"此客户共有",
+  "units. The visit is saved on the unit chosen here.":"个机组。服务记录将保存在此处所选的机组。",
+  "Service Form No.":"服务单号","Invoice No.":"发票号码","Name and phone apply to every unit registered under this customer.":"姓名和电话适用于此客户名下的所有机组。",
+  "Activity log":"操作记录","Activity on this record":"此记录的操作记录","Open activity log":"打开操作记录",
+  "Who did what, and when — every change made in the system.":"谁在何时做了什么——系统中的每一项更改。",
+  "Every change made in the system, who made it and when. Only admins can see this page, and nobody can change it.":"系统中的每一项更改、由谁更改及更改时间。只有管理员可查看此页，任何人都无法修改。",
+  "Only admins can see the activity log.":"只有管理员可查看操作记录。","Nothing recorded for these filters.":"此筛选条件下没有记录。",
+  "Showing activity on":"只显示","only":"的操作记录","Show everything":"显示全部","From":"从","To":"至","Person":"人员","Everyone":"所有人",
+  "System":"系统","Type":"类型","Warranty no. or customer":"保修编号或客户","Show":"显示","When":"时间","Who":"人员","What":"操作","Details":"详情",
+  "and":"及另外","more":"项","Yes":"是","No":"否","Details wiped when the record was deleted":"记录永久删除时已清除详情",
+  "Records & customers":"记录与客户","Service visits & claims":"服务记录与索赔","Maintenance":"保养","Settings & admins":"设置与管理员",
+  "Sign-ins":"登入","Permanent deletions":"永久删除",
+  "Registered a unit":"登记了机组","Edited record details":"修改了记录资料","Removed a record":"删除了记录","Restored a record":"恢复了记录",
+  "Deleted a record permanently":"永久删除了记录","Added a new customer":"新增客户","Edited customer details":"修改了客户资料",
+  "Customer deleted":"客户已删除","Blacklisted a customer":"将客户列入黑名单","Took a customer off the blacklist":"将客户移出黑名单",
+  "Recorded consent":"记录了同意书","Logged a service visit":"记录了上门服务","Edited a service visit":"修改了服务记录",
+  "Removed a service visit":"删除了服务记录","Restored a service visit":"恢复了服务记录","Opened a claim":"开立索赔","Updated a claim":"更新索赔",
+  "Marked a follow-up done":"完成跟进","Snoozed a follow-up":"延后跟进","Dismissed a follow-up":"取消跟进","Reopened a follow-up":"重新开启跟进",
+  "Recorded maintenance done":"记录完成保养","Changed a maintenance interval":"更改保养周期","Switched a maintenance task on or off":"开启或关闭保养项目",
+  "Changed a setting":"更改设置","Changed an alert":"更改提醒","Changed a maintenance default":"更改保养预设",
+  "Made someone an admin":"设为管理员","Removed an admin":"移除管理员","Signed in":"登入","Signed out":"登出",
+  "Signed out automatically (idle or time limit)":"自动登出（闲置或超时）","Changed their own password":"更改了自己的密码","Warranty years after guarantee":"保证期后保修（年）",
   "Delete permanently":"永久删除","Delete this record permanently?":"永久删除此记录？",
   "This deletes the unit, its service history, reminders, maintenance schedule and change history. If it is the customer's only unit, the customer's details are deleted too.":"此操作将删除该机组及其服务记录、提醒、保养计划和修改记录。如果这是该客户唯一的机组，客户资料也会一并删除。",
   "This cannot be undone.":"此操作无法撤销。","Type the warranty number to confirm":"请输入保修编号以确认",
@@ -1244,6 +1344,9 @@ async function forceSignOut(msg){
   render();
   /* "local" signs out this device only, so a timeout on the office PC does
      not also sign the same person out of their phone. */
+  /* Recorded in the activity log while the sign-in is still valid. Capped at
+     2 seconds so a phone with no signal is not held up. */
+  await Promise.race([DataSource.logEvent("timed_out"), new Promise(r => setTimeout(r, 2000))]);
   try { await sb.auth.signOut({ scope: "local" }); } catch(e) {}
   wipeLocalSession();
 }
@@ -1302,6 +1405,7 @@ function nav(){
   if(lb) lb.onclick = () => setLang(LANG === "zh" ? "en" : "zh");
   const o = $("#outBtn");
   if(o) o.onclick = async () => {
+    await DataSource.logEvent("signed_out");
     setSessionStart(null); await DataSource.signOut();
     USER = null; FU_COUNT = 0; IS_ADMIN = false; AUTH_MSG = "";
     location.hash = "#/check"; render();
@@ -1416,7 +1520,8 @@ let FILTERS_OPEN = false;
 const PER_PAGE = 50;
 let SEARCH_TIMER = null;
 let LIST_DRAW = 0;
-let FLASH = "";        // one-off message shown at the top of the registry      // which list redraw is the latest (older ones are dropped)
+let FLASH = "";
+let NEW_OPTS = "";      // product list on the registration form, for extra unit lines        // one-off message shown at the top of the registry      // which list redraw is the latest (older ones are dropped)
 
 /* Postcode: digits only, at most `max`. The box is only rewritten when
    something other than a digit was typed, and the cursor stays where it was.
@@ -1476,7 +1581,9 @@ async function viewList(){
     ${flash ? `<div class="ok">${esc(flash)}</div>` : ""}
     <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px">
       <h1>${t("Customers & Systems")}</h1>
-      <a class="btn btn-p" href="#/admin/new">${t("Register an installation")}</a>
+      <span style="display:flex;gap:8px;flex-wrap:wrap">
+        ${IS_ADMIN ? `<a class="btn btn-s" href="#/admin/activity">${t("Activity log")}</a>` : ""}
+        <a class="btn btn-p" href="#/admin/new">${t("Register an installation")}</a></span>
     </div>
     <div class="stats">
       <button class="stat ${FILTER.faults==="all"&&FILTER.pay==="all"&&FILTER.status==="all"?"on":""}" data-card="all">
@@ -1530,6 +1637,26 @@ async function viewList(){
       </span>` : ""}
     </div>
   </div>`;
+}
+
+/* ---------- units in one registration (file 33) ---------- */
+function unitsCard(r){
+  const mates = (r.customerUnits || []).filter(u => r.groupKey && u.group_key === r.groupKey && !u.voided);
+  const addBtn = !r.voided
+    ? `<a class="btn btn-s" href="#/admin/new?group=${r.id}" style="padding:6px 12px;font-size:.85rem">+ ${t("Add another unit")}</a>` : "";
+  if(mates.length < 2){
+    return `<div class="card"><div class="sec-h"><span>${t("Units in this registration")}</span>${addBtn}</div>
+      <div class="card-pad tiny muted">${t("Only this unit. Use Add another unit to register more units for this customer under the same DO No. and address.")}</div></div>`;
+  }
+  return `<div class="card"><div class="sec-h"><span>${t("Units in this registration")} <span class="pill n">${mates.length}</span></span>${addBtn}</div>
+    <div class="tablewrap" style="border:0;border-radius:0"><table>
+      <thead><tr><th>${t("Serial number")}</th><th>${t("Model")}</th><th>${t("Warranty no")}</th></tr></thead>
+      <tbody>${mates.map(u => `<tr${String(u.id) === String(r.id) ? ' style="background:var(--tint)"' : ""}>
+        <td class="mono">${String(u.id) === String(r.id) ? `<b>${esc(u.serial_no || "—")}</b> <span class="pill n">${t("this unit")}</span>`
+                                                         : `<a href="#/admin/${u.id}">${esc(u.serial_no || "—")}</a>`}</td>
+        <td>${esc(MODELS[u.model_code] ? MODELS[u.model_code].name : u.model_code)}</td>
+        <td class="mono">${String(u.id) === String(r.id) ? esc(u.warranty_no) : `<a href="#/admin/${u.id}">${esc(u.warranty_no)}</a>`}</td></tr>`).join("")}
+      </tbody></table></div></div>`;
 }
 
 /* ---------- maintenance schedule ---------- */
@@ -1653,6 +1780,7 @@ function printHistory(r){
         ${kv(t("Serial number"), esc(r.serial || "—"))}
         ${sec ? kv(t("Replacement tank S/N"), esc(sec.secondary) + " (" + fmt(sec.date) + ")" + (sec.secondaryEnd ? " — " + tankWarranty(sec, false) : "")) : ""}
         ${kv(t("Installed"), fmt(r.installDate))}
+        ${r.doNo ? kv(t("DO No."), esc(r.doNo)) : ""}
         ${c.model.guaranteeYears === 0 ? "" : kv(t("Guarantee ends"), fmt(c.gEnd))}
         ${kv(t("Warranty ends"), fmt(c.wEnd))}
         ${kv(t("Customer"), esc(r.name))}
@@ -1671,7 +1799,8 @@ function printHistory(r){
         ${visits.map(s => `<tr><td>${fmt(s.date)}</td><td>${esc(s.type)}${s.fault ? " (" + esc(t("Fault")) + ")" : ""}</td>
           <td>${esc(s.tech || "—")}</td>
           <td>${esc(s.parts || "—")}${s.secondary ? "<br>" + esc(t("Replacement tank S/N")) + ": " + esc(s.secondary) + (s.secondaryEnd ? "<br>" + tankWarranty(s, false) : "") : ""}</td>
-          <td>${priceText(s)}</td><td>${esc(s.note || "")}</td></tr>`).join("")}
+          <td>${priceText(s)}${s.invoiceNo ? "<br>" + esc(t("Invoice No.")) + ": " + esc(s.invoiceNo) : ""}</td>
+          <td>${esc(s.note || "")}${s.formNo ? "<br>" + esc(t("Service Form No.")) + ": " + esc(s.formNo) : ""}</td></tr>`).join("")}
         </tbody></table>` : `<p>${esc(t("No service visits recorded."))}</p>`}
       <p class="ph-foot">${esc(t("Internal record — contains customer personal data. Do not leave it with anyone outside MySolar."))}</p>
     </div>`;
@@ -1713,6 +1842,8 @@ async function viewDetail(id){
         <dt>${t("Team")}</dt><dd>${esc(s.tech || "—")}</dd>
         <dt>${t("Parts replaced")}</dt><dd>${esc(s.parts || "—")}</dd>
         <dt>${t("Price charged")}</dt><dd>${priceText(s)}</dd>
+        ${s.formNo ? `<dt>${t("Service Form No.")}</dt><dd class="mono">${esc(s.formNo)}</dd>` : ""}
+        ${s.invoiceNo ? `<dt>${t("Invoice No.")}</dt><dd class="mono">${esc(s.invoiceNo)}</dd>` : ""}
         ${s.secondary ? `<dt>${t("Replacement tank S/N")}</dt><dd><span class="mono">${esc(s.secondary)}</span>${
             s.secondaryEnd && !s.voided ? `<div class="tiny">${tankWarranty(s)}</div>` : ""}</dd>` : ""}
         ${s.note ? `<dt>${t("Notes")}</dt><dd>${esc(s.note)}</dd>` : ""}
@@ -1742,8 +1873,19 @@ async function viewDetail(id){
   const visitOpts = VISIT_TYPES.map((tp,i) =>
     `<option value="${i}">${t(tp.v)}</option>`).join("");
 
+  /* A customer with more than one unit: choose which unit this visit is for,
+     by serial number, so a tank replacement goes on the right one (file 33). */
+  const liveUnits = (r.customerUnits || []).filter(u => !u.voided);
+  const unitPick = liveUnits.length > 1 ? `
+      <div class="field" id="sv_unitrow"><label for="sv_unit">${t("Unit (serial number)")}</label>
+        <select id="sv_unit">${liveUnits.map(u => `<option value="${u.id}"${String(u.id) === String(r.id) ? " selected" : ""}>${
+          esc(u.serial_no || t("no serial number"))} — ${esc(MODELS[u.model_code] ? MODELS[u.model_code].name : u.model_code)} — ${esc(u.warranty_no)}${
+          String(u.id) === String(r.id) ? " (" + t("this unit") + ")" : ""}</option>`).join("")}</select>
+        <div class="tiny muted" style="margin-top:4px">${t("This customer has")} ${liveUnits.length} ${t("units. The visit is saved on the unit chosen here.")}</div></div>` : "";
+
   const svcForm = `
     <div class="fu-panel" id="svcPanel">
+      ${unitPick}
       <div class="row2">
         <div class="field"><label for="sv_date">${t("Visit date")}</label>
           <input id="sv_date" type="date" value="${todayISO()}"></div>
@@ -1758,6 +1900,10 @@ async function viewDetail(id){
       </div>
       <div class="field"><label for="sv_sn2">${t("Replacement tank S/N")}</label>
         <input id="sv_sn2" class="mono" placeholder="${t("Only if the tank was replaced on this visit")}"></div>
+      <div class="row2">
+        <div class="field"><label for="sv_form">${t("Service Form No.")}</label><input id="sv_form" class="mono"></div>
+        <div class="field"><label for="sv_inv">${t("Invoice No.")}</label><input id="sv_inv" class="mono"></div>
+      </div>
       <div class="row2">
         <div class="field"><label for="sv_chg">${t("Chargeable")}</label>
           <select id="sv_chg"><option value="no">${t("No — under warranty")}</option>
@@ -1835,6 +1981,8 @@ async function viewDetail(id){
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin:-6px 0 18px">
       ${!r.voided ? `<button class="btn btn-s" id="recEdit" style="padding:7px 13px;font-size:.85rem">${t("Edit details")}</button>` : ""}
       <button class="btn btn-s" id="recPrint" style="padding:7px 13px;font-size:.85rem">${t("Print service history")}</button>
+      ${IS_ADMIN ? `<a class="btn btn-s" href="#/admin/activity?inst=${r.id}&cust=${r.customerId || ""}&ref=${encodeURIComponent(r.warrantyNo || "")}"
+         style="padding:7px 13px;font-size:.85rem">${t("Activity on this record")}</a>` : ""}
       ${IS_ADMIN && !r.voided ? `<button class="btn btn-s" id="recRemove"
          style="padding:7px 13px;font-size:.85rem;color:var(--red)">${t("Remove this record")}</button>` : ""}
     </div>
@@ -1852,6 +2000,7 @@ async function viewDetail(id){
             ${c.model.brand ? `<dt>${t("Brand")}</dt><dd>${esc(c.model.brand)}</dd>` : ""}
             ${c.model.category ? `<dt>${t("Category")}</dt><dd>${esc(c.model.category)}</dd>` : ""}
             <dt>${t("Installed")}</dt><dd>${fmt(r.installDate)}</dd>
+            ${r.doNo ? `<dt>${t("DO No.")}</dt><dd class="mono">${esc(r.doNo)}</dd>` : ""}
             ${c.model.guaranteeYears === 0 ? "" : `<dt>${t("Guarantee ends")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>`}
             <dt>${t("Warranty ends")}${warrantyTerm(c.model)}</dt><dd>${fmt(c.wEnd)}</dd>
           </dl>
@@ -1860,6 +2009,7 @@ async function viewDetail(id){
           <span>${t("Service history")}${faults.length ? ` <span class="pill ${repeatFlag?"x":"a"}">${faults.length} fault${faults.length===1?"":"s"} / ${REPEAT_WINDOW_MONTHS}mth</span>` : ""}</span>
           <button class="btn btn-s" style="padding:6px 12px;font-size:.85rem" id="addSvc">${t("Log a visit")}</button></div>
           ${repeatBanner}${svcForm}${svc}</div>
+        ${unitsCard(r)}
         ${maintCard(r)}
       </div>
       <div style="display:flex;flex-direction:column;gap:18px">
@@ -1867,7 +2017,7 @@ async function viewDetail(id){
           <dl class="kv">
             <dt>${t("Name")}</dt><dd>${esc(r.name)}</dd>
             <dt>${t("Phone")}</dt><dd>${esc(r.phone)}</dd>
-            <dt>${t("Email")}</dt><dd style="word-break:break-all">${esc(r.email||"—")}</dd>
+            ${r.email ? `<dt>${t("Email")}</dt><dd style="word-break:break-all">${esc(r.email)}</dd>` : ""}
             <dt>${t("Area")}</dt><dd>${esc(r.area||"—")}</dd></dl>
           <div class="card-pad" style="border-top:1px solid var(--line);padding-top:14px">
             <div class="tiny muted">${t("Installation address")}</div>
@@ -1926,11 +2076,11 @@ async function viewEdit(id){
       <p class="tiny muted" style="margin:4px 0 16px">${t("The warranty number and the customer's consent record cannot be changed. Every change is recorded on the record.")}</p>
       <fieldset class="addr">
         <legend>${t("Customer")}</legend>
-        <p class="tiny muted" style="margin:0 0 8px">${t("Name, phone and email apply to every unit registered under this customer.")}</p>
+        <p class="tiny muted" style="margin:0 0 8px">${t("Name and phone apply to every unit registered under this customer.")}</p>
         <div class="field"><label for="e_name">${t("Customer name")}</label><input id="e_name" value="${val(r.name)}"></div>
         <div class="row2">
           <div class="field"><label for="e_phone">${t("Phone")}</label><input id="e_phone" value="${val(r.phone)}"></div>
-          <div class="field"><label for="e_email">${t("Email (optional)")}</label><input id="e_email" value="${val(r.email)}"></div></div>
+          <input type="hidden" id="e_email" value="${val(r.email)}"></div>
       </fieldset>
       <fieldset class="addr">
         <legend>${t("Installation site address")}</legend>
@@ -1946,6 +2096,7 @@ async function viewEdit(id){
       <div class="row2">
         <div class="field"><label for="e_model">${t("Model")}</label><select id="e_model">${productOptions(r.model)}</select></div>
         <div class="field"><label for="e_serial">${t("Serial number")}</label><input id="e_serial" value="${val(r.serial)}"></div></div>
+      <div class="field" style="max-width:320px"><label for="e_do">${t("DO No.")}</label><input id="e_do" class="mono" value="${val(r.doNo)}"></div>
       <div class="row2">
         <div class="field"><label for="e_date">${t("Install date")}</label><input id="e_date" type="date" value="${val(r.installDate)}"></div>
         <div class="field"><label for="e_installer">${t("Installed by")}</label><input id="e_installer" value="${val(r.installer)}"></div></div>
@@ -2001,7 +2152,7 @@ function wireEdit(id){
     const b = $("#eSave"); b.disabled = true; b.textContent = t("Saving…");
     try{
       await DataSource.updateDetails(id, {
-        name: v("e_name"), phone: normalizePhone(v("e_phone")), email: v("e_email"),
+        name: v("e_name"), phone: normalizePhone(v("e_phone")), email: v("e_email"), doNo: v("e_do"),
         address1: v("e_addr1"), address2: v("e_addr2"), postcode: v("e_postcode"),
         area: v("e_area"), state: $("#e_state").value,
         model: mdl.value, serial: normalizeSerial(v("e_serial")), installDate: v("e_date"),
@@ -2016,6 +2167,22 @@ function wireEdit(id){
       b.disabled = false; b.textContent = t("Save changes");
     }
   };
+}
+
+/* One unit line on the registration form (file 33). The first line keeps
+   the ids n_model / n_serial / n_wn that the rest of the form relies on. */
+function unitRow(opts, i){
+  const first = i === 0;
+  return `<div class="unit-row" data-unit>
+    <div class="field u-model" style="margin-bottom:6px"><label${first ? ' for="n_model"' : ""}>${t("Model")}</label>
+      <select data-model${first ? ' id="n_model"' : ""}>${opts}</select></div>
+    <div class="field" style="margin-bottom:6px"><label${first ? ' for="n_serial"' : ""}>${t("Serial number")}</label>
+      <input data-serial class="mono"${first ? ' id="n_serial"' : ""} placeholder="${t("Optional")}"></div>
+    <div style="padding-bottom:12px">${first ? "" : `<button type="button" class="lnk" data-rmunit style="color:var(--red)">${t("Remove")}</button>`}</div>
+    <div class="field" data-wnwrap style="display:none;grid-column:1 / -1;margin-bottom:6px">
+      <label${first ? ' for="n_wn"' : ""}>${t("Existing warranty number")}</label>
+      <input data-wn${first ? ' id="n_wn"' : ""} placeholder="${t("Leave blank to generate a new one")}"></div>
+  </div>`;
 }
 
 function viewNew(){
@@ -2034,10 +2201,12 @@ function viewNew(){
   const opts = Object.entries(groups).map(([cat, list]) => cat
       ? `<optgroup label="${esc(cat)}">${list.map(optLine).join("")}</optgroup>`
       : list.map(optLine).join("")).join("");
+  NEW_OPTS = opts;
   return `<div class="page narrow">
     <button class="crumb" onclick="location.hash='#/admin/list'">&larr; ${t("Back to registry")}</button>
     <div class="card card-pad">
       <h2>${t("Register an installation")}</h2>
+      <div id="n_addto"></div>
       <p class="tiny muted">${t("Warranty number is generated automatically.")}</p>
 
       <div class="consent" style="background:var(--tint);margin:0 0 18px">
@@ -2051,7 +2220,7 @@ function viewNew(){
       <div class="field"><label for="n_name">${t("Customer name")}</label><input id="n_name"></div>
       <div class="row2">
         <div class="field"><label for="n_phone">${t("Phone")}</label><input id="n_phone" placeholder="012-345 6789"></div>
-        <div class="field"><label for="n_email">${t("Email (optional)")}</label><input id="n_email"></div></div>
+        <div class="field"><label for="n_do">${t("DO No.")}</label><input id="n_do" class="mono" placeholder="${t("Delivery order number")}"></div></div>
       <fieldset class="addr">
         <legend>${t("Installation site address")}</legend>
         <div class="field"><label for="n_addr1">${t("Address 1")}</label>
@@ -2068,13 +2237,18 @@ function viewNew(){
             MY_STATES.map(st => `<option value="${esc(st)}"${st==="Selangor"?" selected":""}>${esc(st)}</option>`).join("")}</select></div>
       </fieldset>
       <div class="field" style="max-width:260px"><label for="n_date">${t("Install date")}</label><input id="n_date" type="date"></div>
-      <div class="row2">
-        <div class="field"><label for="n_model">${t("Model")}</label><select id="n_model">${opts}</select></div>
-        <div class="field"><label for="n_serial">${t("Serial number")}</label><input id="n_serial" placeholder="Optional"></div></div>
-      <div class="field" id="n_wnrow" style="display:none">
-        <label for="n_wn">${t("Existing warranty number")}</label>
-        <input id="n_wn" placeholder="${t("Leave blank to generate a new one")}">
-      </div>
+      <fieldset class="addr" id="n_units">
+        <legend>${t("Units installed")} <span id="n_ucount" class="pill n" style="margin-left:4px">1</span></legend>
+        <div id="n_unitlist">${unitRow(opts, 0)}</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:4px 0 8px">
+          <button type="button" class="btn btn-s" id="n_addunit">+ ${t("Add another unit")}</button>
+          <button type="button" class="lnk" id="n_paste">${t("Paste a list of serial numbers")}</button></div>
+        <div id="n_pastebox" style="display:none;margin-bottom:10px">
+          <label for="n_pastetxt">${t("One serial number per line. Each becomes a unit with the product chosen in the last row.")}</label>
+          <textarea id="n_pastetxt" rows="5" class="mono" style="width:100%"></textarea>
+          <button type="button" class="btn btn-s" id="n_pasteGo" style="margin-top:6px">${t("Add these units")}</button></div>
+        <p class="tiny muted" style="margin:0 0 10px">${t("Each unit gets its own warranty number, coverage, maintenance schedule and service history. They are kept together as one registration, with the same customer, address and DO No.")}</p>
+      </fieldset>
       <div class="row2">
         <div class="field"><label for="n_channel">${t("Sold via")}</label>
           <select id="n_channel">${CHANNELS.map(c => `<option value="${c.v}">${t(c.label)}</option>`).join("")}</select></div>
@@ -2309,6 +2483,10 @@ async function viewSettings(){
       <div><b>${t("Your account")}</b><div class="tiny muted">${t("Signed in as")} ${esc(USER?.email || "")}</div></div>
       <a class="btn btn-s" href="#/admin/account">${t("Change my password")}</a>
     </div>
+    ${IS_ADMIN ? `<div class="card card-pad" style="margin-bottom:22px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><b>${t("Activity log")}</b><div class="tiny muted">${t("Who did what, and when — every change made in the system.")}</div></div>
+      <a class="btn btn-s" href="#/admin/activity">${t("Open activity log")}</a>
+    </div>` : ""}
 
     <div class="card" style="margin-bottom:22px">
       <div class="sec-h">${t("Alerts — when should the system flag something?")}</div>
@@ -2725,6 +2903,176 @@ function blacklistPopup(r){
   d.querySelector("#blPopOk").focus();
 }
 
+/* ---------- activity log (file 32) ---------- */
+function nextDayISO(iso){ const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + 1); return todayISO(d); }
+
+const ACTIVITY_KINDS = {
+  records:     { label: "Records & customers", tables: ["installations","customers"] },
+  visits:      { label: "Service visits & claims", tables: ["service_visits","claims"] },
+  followups:   { label: "Follow-ups", tables: ["followups"] },
+  maintenance: { label: "Maintenance", tables: ["installation_maintenance"] },
+  settings:    { label: "Settings & admins", tables: ["app_settings","followup_rules","maintenance_tasks","admins"] },
+  sessions:    { label: "Sign-ins", tables: ["session"] },
+  deletions:   { label: "Permanent deletions", tables: [] }
+};
+
+const ACTIVITY_ACTIONS = {
+  registered:"Registered a unit", record_edited:"Edited record details", record_removed:"Removed a record",
+  record_restored:"Restored a record", record_deleted:"Deleted a record permanently",
+  customer_added:"Added a new customer", customer_edited:"Edited customer details", customer_deleted:"Customer deleted",
+  blacklisted:"Blacklisted a customer", unblacklisted:"Took a customer off the blacklist", consent_recorded:"Recorded consent",
+  visit_added:"Logged a service visit", visit_edited:"Edited a service visit", visit_removed:"Removed a service visit",
+  visit_restored:"Restored a service visit", visit_deleted:"Service visit deleted",
+  claim_opened:"Opened a claim", claim_updated:"Updated a claim",
+  followup_done:"Marked a follow-up done", followup_snoozed:"Snoozed a follow-up", followup_dismissed:"Dismissed a follow-up",
+  followup_open:"Reopened a follow-up", followup_in_progress:"Started a follow-up", followup_edited:"Edited a follow-up",
+  maintenance_done:"Recorded maintenance done", maintenance_interval:"Changed a maintenance interval",
+  maintenance_switched:"Switched a maintenance task on or off", maintenance_edited:"Edited maintenance",
+  setting_changed:"Changed a setting", alert_rule_changed:"Changed an alert", maintenance_task_changed:"Changed a maintenance default",
+  admin_added:"Made someone an admin", admin_removed:"Removed an admin",
+  signed_in:"Signed in", signed_out:"Signed out", timed_out:"Signed out automatically (idle or time limit)",
+  password_changed:"Changed their own password"
+};
+
+/* Plain names for the database columns that appear in the details. */
+const FIELD_LABELS = {
+  name:"Customer name", phone:"Phone", email:"Email", address:"Address", area:"Area", postcode:"Postcode",
+  site_address1:"Address 1", site_address2:"Address 2", site_area:"Area", site_state:"State", site_postcode:"Postcode",
+  model_code:"Product", serial_no:"Serial number", install_date:"Install date", channel:"Sold via",
+  dealer_id:"Dealer / contractor", installer:"Installed by", project_name:"Project name",
+  guarantee_years_override:"Project guarantee years", warranty_years_override:"Project warranty years",
+  guarantee_end:"Guarantee ends", warranty_end:"Warranty ends", has_filter:"Water filter", filter_install_date:"Filter installed",
+  notes:"Notes", voided:"Removed", voided_reason:"Reason removed",
+  visit_date:"Visit date", visit_type:"Visit type", technician:"Team", parts_replaced:"Parts replaced",
+  chargeable:"Chargeable", amount:"Price charged", payment_status:"Payment", amount_paid:"Amount paid", paid_on:"Paid on",
+  due_on:"Payment due", is_fault_visit:"Fault visit", secondary_serial:"Replacement tank S/N",
+  secondary_warranty_end:"Replacement tank warranty until",
+  status:"Status", outcome:"Outcome", snooze_until:"Snoozed until", reminder:"Reminder", task:"Task",
+  interval_months:"Every (months)", last_done_date:"Last done", active:"Active",
+  value:"Value", offset_value:"Value", window_months:"Within (months)", default_interval_months:"Every (months)",
+  advance_notice_days:"Notice (days)", recurring:"Repeats", label:"Name",
+  blacklisted:"Blacklisted", blacklist_reason:"Blacklist reason", consent_given_at:"Consent given", consent_method:"Consent method",
+  email_admin:"Email", reason:"Reason", customer_deleted:"Customer deleted too",
+  do_no:"DO No.", service_form_no:"Service Form No.", invoice_no:"Invoice No."
+};
+/* Bookkeeping columns: true, but noise on screen. */
+const FIELD_HIDDEN = new Set(["voided_at","voided_by","completed_at","completed_by","blacklisted_at","added_at","added_by",
+  "entry_mode","warranty_no","customer_id","installation_id","consent_notice_ver","rule_code","task_code","code","key","priority",
+  "trigger_type","sort_order","applies_to","label_zh","assigned_to","description","email","group_key"]);
+
+function actValue(k, v){
+  if(v === null || v === undefined || v === "") return "—";
+  if(typeof v === "boolean") return v ? t("Yes") : t("No");
+  if(k === "model_code" && MODELS[v]) return esc(MODELS[v].name);
+  if(k === "channel") return esc(t(channelInfo(v).label));
+  if(typeof v === "string" && /^\d{4}-\d{2}-\d{2}T/.test(v)) return fmt(new Date(v));
+  if(typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) return fmt(v);
+  const s = String(v);
+  return esc(s.length > 90 ? s.slice(0, 90) + "…" : s);
+}
+
+function actDetails(row){
+  if(row.changes === null && row.entity !== "session")
+    return `<span class="tiny muted">${t("Details wiped when the record was deleted")}</span>`;
+  if(row.entity === "admins") return "";            // the email is already shown under "What"
+  const ch = row.changes || {};
+  const keys = Object.keys(ch).filter(k => !FIELD_HIDDEN.has(k));
+  if(!keys.length) return "";
+  const line = k => {
+    const [o, n] = Array.isArray(ch[k]) ? ch[k] : [null, ch[k]];
+    const label = esc(t(FIELD_LABELS[k] || k));
+    return (o === null || o === undefined)
+      ? `<div><span class="muted">${label}:</span> ${actValue(k, n)}</div>`
+      : `<div><span class="muted">${label}:</span> ${actValue(k, o)} &rarr; <b>${actValue(k, n)}</b></div>`;
+  };
+  if(keys.length <= 3) return `<div class="tiny">${keys.map(line).join("")}</div>`;
+  return `<details class="tiny"><summary style="cursor:pointer">${keys.slice(0,2).map(k => esc(t(FIELD_LABELS[k] || k))).join(", ")} ${t("and")} ${keys.length - 2} ${t("more")}</summary>${keys.map(line).join("")}</details>`;
+}
+
+let ACT = null;              // activity page filters
+const ACT_PER_PAGE = 50;
+
+function actFilterFromHash(){
+  const qs = new URLSearchParams((location.hash.split("?")[1]) || "");
+  const base = ACT || { from: todayISO(new Date(Date.now() - 30*86400e3)), to: todayISO(), actor: "", kind: "", q: "", page: 0 };
+  ACT = Object.assign({}, base, { inst: qs.get("inst") || "", cust: qs.get("cust") || "", ref: qs.get("ref") || "" });
+  if(ACT.inst){ Object.assign(ACT, { from: "", to: "", actor: "", kind: "", q: "", page: 0 }); }   // one record: its whole history
+  else if(base.inst){ ACT.from = todayISO(new Date(Date.now() - 30*86400e3)); ACT.to = todayISO(); ACT.page = 0; }
+  return ACT;
+}
+
+async function viewActivity(){
+  if(!IS_ADMIN) return `<div class="page"><div class="card empty">${t("Only admins can see the activity log.")}</div></div>`;
+  const f = actFilterFromHash();
+  const [res, people] = await Promise.all([
+    DataSource.listActivity(f, f.page, ACT_PER_PAGE),
+    DataSource.activityActors().catch(() => [])
+  ]);
+  const pages = Math.max(1, Math.ceil(res.total / ACT_PER_PAGE));
+  const when = at => { const d = new Date(at);
+    return `${fmt(d)}<div class="src">${d.toLocaleTimeString(LANG === "zh" ? "zh-CN" : "en-GB", { hour: "2-digit", minute: "2-digit" })}</div>`; };
+  const rows = res.rows.length ? res.rows.map(a => `
+    <tr>
+      <td class="mono act-when" style="white-space:nowrap">${when(a.at)}</td>
+      <td>${a.actor ? esc(a.actor) : `<span class="pill n">${t("System")}</span>`}</td>
+      <td><b>${esc(t(ACTIVITY_ACTIONS[a.action] || a.action))}</b>
+        ${a.ref ? `<div class="src" style="text-transform:none;letter-spacing:0">${
+          a.installation_id && a.action !== "record_deleted" && a.changes !== null
+            ? `<a href="#/admin/${a.installation_id}">${esc(a.ref)}</a>` : esc(a.ref)}</div>` : ""}</td>
+      <td style="min-width:220px">${actDetails(a)}</td>
+    </tr>`).join("")
+    : `<tr><td colspan="4" class="empty">${t("Nothing recorded for these filters.")}</td></tr>`;
+
+  return `<div class="page">
+    <button class="crumb" onclick="location.hash='#/admin/list'">&larr; ${t("Back to registry")}</button>
+    <h1>${t("Activity log")}</h1>
+    <p class="tiny muted" style="margin:6px 0 16px">${t("Every change made in the system, who made it and when. Only admins can see this page, and nobody can change it.")}</p>
+    ${f.inst ? `<div class="removed-note">${t("Showing activity on")} <b>${esc(f.ref || ("#" + f.inst))}</b> ${t("only")}.
+      <button class="lnk" id="actAll" style="margin-left:8px">${t("Show everything")}</button></div>` : ""}
+    <div class="filters show" style="margin-bottom:14px">
+      <div class="field"><label for="aFrom">${t("From")}</label><input id="aFrom" type="date" value="${esc(f.from)}"></div>
+      <div class="field"><label for="aTo">${t("To")}</label><input id="aTo" type="date" value="${esc(f.to)}"></div>
+      <div class="field"><label for="aWho">${t("Person")}</label>
+        <select id="aWho"><option value="">${t("Everyone")}</option><option value="system">${t("System")}</option>
+          ${people.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("")}</select></div>
+      <div class="field"><label for="aKind">${t("Type")}</label>
+        <select id="aKind"><option value="">${t("All")}</option>
+          ${Object.entries(ACTIVITY_KINDS).map(([k, v]) => `<option value="${k}">${t(v.label)}</option>`).join("")}</select></div>
+      <div class="field"><label for="aQ">${t("Warranty no. or customer")}</label><input id="aQ" value="${esc(f.q)}"></div>
+      <div class="field" style="align-self:end"><button class="btn btn-p" id="aGo">${t("Show")}</button></div>
+    </div>
+    <div class="tablewrap"><table class="act">
+      <thead><tr><th>${t("When")}</th><th>${t("Who")}</th><th>${t("What")}</th><th>${t("Details")}</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div class="pager">
+      <span class="tiny muted">${res.total === 0 ? "" :
+        `${t("Showing")} ${f.page*ACT_PER_PAGE+1}–${Math.min((f.page+1)*ACT_PER_PAGE, res.total)} ${t("of")} ${res.total}`}</span>
+      ${pages > 1 ? `<span class="pgbtns">
+        <button class="btn btn-s" id="aPrev" ${f.page===0?"disabled":""}>${t("Previous")}</button>
+        <span class="tiny muted">${t("Page")} ${f.page+1} / ${pages}</span>
+        <button class="btn btn-s" id="aNext" ${f.page>=pages-1?"disabled":""}>${t("Next")}</button></span>` : ""}
+    </div>
+  </div>`;
+}
+
+function wireActivity(){
+  if(!ACT || !$("#aGo")) return;
+  $("#aWho").value = ACT.actor; $("#aKind").value = ACT.kind;
+  const go = () => {
+    ACT.from = $("#aFrom").value; ACT.to = $("#aTo").value;
+    ACT.actor = $("#aWho").value; ACT.kind = $("#aKind").value; ACT.q = $("#aQ").value.trim();
+    ACT.page = 0; render();
+  };
+  $("#aGo").onclick = go;
+  $("#aQ").addEventListener("keydown", e => { if(e.key === "Enter") go(); });
+  const all = $("#actAll");
+  if(all) all.onclick = () => { ACT.from = todayISO(new Date(Date.now() - 30*86400e3)); ACT.to = todayISO(); ACT.page = 0;
+                                location.hash = "#/admin/activity"; };
+  const pv = $("#aPrev"), nx = $("#aNext");
+  if(pv) pv.onclick = () => { ACT.page--; render(); };
+  if(nx) nx.onclick = () => { ACT.page++; render(); };
+}
+
 /* ---------- your account: choose your own password ---------- */
 const mustSetPassword = () => !!USER && !(USER.user_metadata && USER.user_metadata.pw_set === true);
 
@@ -2767,6 +3115,7 @@ function wireAccount(){
     go.disabled = true; go.textContent = t("Saving…");
     try{
       USER = await DataSource.changePassword(pw.value);
+      DataSource.logEvent("password_changed");
       pw.value = pw2.value = "";
       msg.innerHTML = `<div class="ok">${t("Password saved. Use it the next time you sign in.")}</div>`;
       go.textContent = t("Save my password"); go.disabled = false;
@@ -2810,7 +3159,7 @@ async function render(){
         const res = await DataSource.signIn($("#em").value.trim(), $("#pw").value);
         btn.disabled = false; btn.textContent = t("Sign in");
         if(res.ok){
-          USER = res.user; AUTH_MSG = ""; await refreshAdmin();
+          USER = res.user; AUTH_MSG = ""; DataSource.logEvent("signed_in"); await refreshAdmin();
           stamp(Date.now()); setSessionStart(Date.now()); startSessionGuard();
           FU_COUNT = await DataSource.countFollowups();
           location.hash = "#/admin/list"; render();
@@ -2829,6 +3178,12 @@ async function render(){
 
     app.innerHTML = SKELETON;
     try{
+      if(r === "#/admin/activity"){
+        app.innerHTML = await viewActivity();
+        wireActivity();
+        return;
+      }
+
       if(r === "#/admin/settings"){
         app.innerHTML = await viewSettings();
         wireSettings();
@@ -2846,10 +3201,49 @@ async function render(){
       if(r === "#/admin/new"){
         app.innerHTML = viewNew();
 
+        /* Unit lines (file 33). */
+        const unitList = $("#n_unitlist");
+        const syncUnits = () => {
+          const rows = unitList.querySelectorAll("[data-unit]");
+          $("#n_ucount").textContent = rows.length;
+          rows.forEach(rw => {
+            rw.querySelector("[data-wnwrap]").style.display = $("#n_hist").checked ? "" : "none";
+            const rm = rw.querySelector("[data-rmunit]");
+            if(rm) rm.onclick = () => { rw.remove(); syncUnits(); };
+            const sni = rw.querySelector("[data-serial]");
+            if(!sni.dataset.wired){ sni.dataset.wired = "1";
+              sni.addEventListener("blur", () => { sni.value = normalizeSerial(sni.value); }); }
+          });
+        };
+        const addUnit = (serial = "") => {
+          const rows = unitList.querySelectorAll("[data-unit]");
+          if(rows.length >= 200){ showMsg("nErr", `<div class="err">${t("At most 200 units can be registered at once.")}</div>`); return null; }
+          const lastModel = rows.length ? rows[rows.length - 1].querySelector("[data-model]").value : "";
+          const tmp = document.createElement("div");
+          tmp.innerHTML = unitRow(NEW_OPTS, rows.length);
+          const rw = tmp.firstElementChild;
+          if(lastModel) rw.querySelector("[data-model]").value = lastModel;
+          rw.querySelector("[data-serial]").value = serial;
+          unitList.appendChild(rw);
+          syncUnits();
+          return rw;
+        };
+        $("#n_addunit").onclick = () => { const rw = addUnit(); if(rw) rw.querySelector("[data-serial]").focus(); };
+        $("#n_paste").onclick = () => { const b = $("#n_pastebox"); b.style.display = b.style.display === "none" ? "" : "none"; };
+        $("#n_pasteGo").onclick = () => {
+          const list = $("#n_pastetxt").value.split(/[\n,;\t]+/).map(x => normalizeSerial(x)).filter(Boolean);
+          const firstSn = $("#n_serial");
+          list.forEach((sn, i) => {
+            if(i === 0 && !firstSn.value.trim()) firstSn.value = sn;
+            else addUnit(sn);
+          });
+          $("#n_pastetxt").value = ""; $("#n_pastebox").style.display = "none";
+        };
+
         const hist = $("#n_hist");
         const syncHist = () => {
           const on = hist.checked;
-          $("#n_wnrow").style.display      = on ? "" : "none";
+          syncUnits();
           $("#n_consentrow").style.display = on ? "none" : "";
           $("#n_histnote").style.display   = on ? "" : "none";
         };
@@ -2880,9 +3274,44 @@ async function render(){
         ["n_phone","n_addr1","n_postcode","n_serial"].forEach(id =>
           $("#"+id).addEventListener("input", () => { dupConfirmed = false; $("#nDup").innerHTML = ""; }));
 
+        /* "Add another unit to this registration" from a record (file 33):
+           the customer, address, DO No. and sale details are filled in. */
+        const addTo = new URLSearchParams(location.hash.split("?")[1] || "").get("group");
+        if(addTo){
+          try{
+            const g = await DataSource.getById(addTo, true);
+            if(g && !g.voided){
+              const setv = (id, val) => { const el = $("#"+id); if(el) el.value = val || ""; };
+              setv("n_name", g.name); setv("n_phone", g.phone); setv("n_do", g.doNo);
+              setv("n_addr1", g.site1); setv("n_addr2", g.site2); setv("n_postcode", g.sitePostcode);
+              setv("n_area", g.siteArea); if(g.siteState) setv("n_state", g.siteState);
+              setv("n_date", g.installDate); setv("n_installer", g.installer);
+              if(MODELS[g.model]) setv("n_model", g.model);
+              const chv0 = g.channel === "direct" ? "end_user" : g.channel;
+              setv("n_channel", chv0); syncChannel();
+              setv("n_dealer", g.dealer);
+              if(chv0 === "project"){ setv("n_proj", g.projectName); setv("n_gy", g.gOverride ?? ""); setv("n_wy", g.wOverride ?? ""); }
+              $("#n_name").readOnly = true; $("#n_phone").readOnly = true;
+              $("#n_addto").innerHTML = `<div class="removed-note" style="margin:6px 0 14px">${t("Adding units to the registration of")}
+                <a href="#/admin/${g.id}">${esc(g.warrantyNo)}</a> (${esc(g.name)}).
+                ${t("Name and phone stay the same. Everything else can be changed for the new units.")}</div>`;
+            }
+          }catch(e){ /* fall back to a blank form */ }
+        }
+
         $("#nGo").onclick = async () => {
           const v = id => $("#"+id).value.trim();
           const isHist = $("#n_hist").checked;
+          const units = [...document.querySelectorAll("#n_unitlist [data-unit]")].map(rw => ({
+            model:  rw.querySelector("[data-model]").value,
+            serial: normalizeSerial(rw.querySelector("[data-serial]").value),
+            warrantyNo: isHist ? rw.querySelector("[data-wn]").value.trim() : ""
+          }));
+          const seen = {};
+          const twice = units.map(u => u.serial).filter(sn => sn && (seen[sn] = (seen[sn] || 0) + 1) === 2);
+          if(twice.length){
+            showMsg("nErr", `<div class="err">${t("This serial number is entered more than once")}: ${esc(twice.join(", "))}</div>`); return;
+          }
           if(!v("n_name") || !v("n_phone") || !v("n_date")){
             showMsg("nErr", `<div class="err">${t("Name, phone and install date are required.")}</div>`); return;
           }
@@ -2941,25 +3370,25 @@ async function render(){
           const btn = $("#nGo"); btn.disabled = true; btn.textContent = "Saving…";
           try{
             const row = await DataSource.createWarranty({
-              name:v("n_name"), phone:normalizePhone(v("n_phone")) || v("n_phone"), email:v("n_email"),
+              name:v("n_name"), phone:normalizePhone(v("n_phone")) || v("n_phone"), doNo:v("n_do"),
               address1:v("n_addr1"), address2:v("n_addr2"), postcode:v("n_postcode"),
-              area:v("n_area"), state:$("#n_state").value, installDate:v("n_date"), model:$("#n_model").value,
-              serial:normalizeSerial(v("n_serial")), channel:chv,
+              area:v("n_area"), state:$("#n_state").value, installDate:v("n_date"),
+              units, addTo, channel:chv,
               dealer:(chv === "dealer" || chv === "contractor") ? v("n_dealer") : "",
               installer:v("n_installer"),
               projectName: chv === "project" ? v("n_proj") : "",
               guaranteeYears: chv === "project" ? Number(gy) : null,
               warrantyYears:  chv === "project" ? Number(wy) : null,
               consent: !isHist,
-              historical: isHist,
-              warrantyNo: isHist ? v("n_wn") : null
+              historical: isHist
             });
+            const made = row.created && row.created.length ? row.created : [{ warranty_no: row.warrantyNo, model_code: row.model }];
             notify("installation_registered", {
               customer_name: row.name,
               phone:         row.phone,
               area:          row.area,
-              model:         MODELS[row.model] ? MODELS[row.model].name : row.model,
-              warranty_no:   row.warrantyNo,
+              model:         made.map(u => (MODELS[u.model_code] ? MODELS[u.model_code].name : u.model_code) + (u.serial_no ? " (" + u.serial_no + ")" : "")).join(", "),
+              warranty_no:   made.map(u => u.warranty_no).join(", "),
               install_date:  fmt(row.installDate),
               channel:       row.channel,
               dealer:        row.dealer,
@@ -2990,6 +3419,7 @@ async function render(){
         if(btn && panel) btn.onclick = () => {
           $("#sv_editing").value = "";
           setVisitType(null);
+          if($("#sv_unitrow")){ $("#sv_unitrow").style.display = ""; $("#sv_unit").value = String(m[1]); }
           $("#sv_save").textContent = t("Save visit");
           const cb = $("#sv_cancel"); if(cb) cb.style.display = "none";
           panel.classList.toggle("show");
@@ -3164,6 +3594,10 @@ async function render(){
             $("#sv_tech").value  = v.tech || "";
             $("#sv_parts").value = v.parts || "";
             if($("#sv_sn2")) $("#sv_sn2").value = v.secondary || "";
+            if($("#sv_form")) $("#sv_form").value = v.formNo || "";
+            if($("#sv_inv"))  $("#sv_inv").value  = v.invoiceNo || "";
+            /* A saved visit stays on its unit. */
+            if($("#sv_unitrow")) $("#sv_unitrow").style.display = "none";
             $("#sv_chg").value   = v.chargeable ? "yes" : "no";
             $("#sv_amt").value   = v.amount ?? "";
             syncPay();
@@ -3236,12 +3670,15 @@ async function render(){
                 amountPaid: $("#sv_paid") ? $("#sv_paid").value : null,
                 paidOn: $("#sv_paidon") ? $("#sv_paidon").value : null,
                 note: $("#sv_note").value.trim(),
-                secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : ""
+                secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : "",
+                formNo: $("#sv_form") ? $("#sv_form").value.trim() : "",
+                invoiceNo: $("#sv_inv") ? $("#sv_inv").value.trim() : ""
               });
               render();
               return;
             }
-            const updated = await DataSource.addServiceVisit(m[1], {
+            const unitId = $("#sv_unit") ? $("#sv_unit").value : m[1];
+            const updated = await DataSource.addServiceVisit(Number(unitId), {
               date:  $("#sv_date").value,
               type:  vt.v,
               fault: vt.fault,
@@ -3252,7 +3689,9 @@ async function render(){
               payStatus: $("#sv_pay") ? $("#sv_pay").value : "unpaid",
               dueOn: $("#sv_due") ? $("#sv_due").value : null,
               note:  $("#sv_note").value.trim(),
-              secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : ""
+              secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : "",
+              formNo: $("#sv_form") ? $("#sv_form").value.trim() : "",
+              invoiceNo: $("#sv_inv") ? $("#sv_inv").value.trim() : ""
             });
 
             /* The whole point of the feature: the moment a unit crosses the
@@ -3272,6 +3711,8 @@ async function render(){
                 staff:         USER?.email || "staff"
               });
             }
+            /* Saved on another of the customer's units: go to that unit. */
+            if(String(unitId) !== String(m[1])){ location.hash = "#/admin/" + unitId; return; }
             render();
           }catch(e){
             $("#svErr").innerHTML = `<div class="err">Couldn't save.<br><span class="tiny mono">${esc(e.message||e)}</span></div>`;
