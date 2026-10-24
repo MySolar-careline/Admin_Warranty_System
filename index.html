@@ -1384,6 +1384,22 @@ let PAGE = 0;
 let FILTERS_OPEN = false;
 const PER_PAGE = 50;
 let SEARCH_TIMER = null;
+let LIST_DRAW = 0;      // which list redraw is the latest (older ones are dropped)
+
+/* Postcode: digits only, at most `max`. The box is only rewritten when
+   something other than a digit was typed, and the cursor stays where it was.
+   (Rewriting it on every key sent the cursor to the end of the box.) */
+function keepDigits(el, max){
+  el.addEventListener("input", () => {
+    const v = el.value, clean = v.replace(/\D/g, "").slice(0, max);
+    if(clean === v) return;
+    const at = el.selectionStart ?? v.length;
+    const before = v.slice(0, at).replace(/\D/g, "").length;
+    el.value = clean;
+    const p = Math.min(before, clean.length);
+    try { el.setSelectionRange(p, p); } catch(e) {}
+  });
+}
 
 async function viewList(){
   // Stats and the current page load together rather than one after the other.
@@ -1918,7 +1934,7 @@ function wireEdit(id){
   const sn = $("#e_serial");
   sn.addEventListener("blur", () => { sn.value = normalizeSerial(sn.value); });
   const pc = $("#e_postcode");
-  pc.addEventListener("input", () => { pc.value = pc.value.replace(/\D/g, "").slice(0, 5); });
+  keepDigits(pc, 5);
   $("#eCancel").onclick = () => { location.hash = "#/admin/" + id; };
   $("#eSave").onclick = async () => {
     const v = k => $("#"+k).value.trim();
@@ -2674,7 +2690,7 @@ async function render(){
         const ph = $("#n_phone");
         ph.addEventListener("blur", () => { const f = normalizePhone(ph.value); if(f) ph.value = f; });
         const pc = $("#n_postcode");
-        pc.addEventListener("input", () => { pc.value = pc.value.replace(/\D/g, "").slice(0, 5); });
+        keepDigits(pc, 5);
         const sn = $("#n_serial");
         sn.addEventListener("blur", () => { sn.value = normalizeSerial(sn.value); });
         const ch = $("#n_channel"), mdl = $("#n_model");
@@ -3102,16 +3118,30 @@ async function render(){
           $("#fs").value = FILTER.status; $("#fc").value = FILTER.channel;
           $("#ff").value = FILTER.faults; $("#fp").value = FILTER.pay;
         };
+        /* Redraw the list WITHOUT replacing the search box. The old way
+           rebuilt the box too and put the cursor back where it was before
+           the search went off — anything typed while the results were
+           loading moved the cursor or was lost. The box the person is
+           typing in now stays exactly as it is, and an older search that
+           comes back late is ignored. */
         const redraw = async () => {
-          const box = $("#q");
-          const hadFocus = box === document.activeElement;
-          const pos = box ? box.selectionStart : 0;
-          app.innerHTML = await viewList();
-          setSelects();
-          if(hadFocus){
-            const nb = $("#q");
-            if(nb){ nb.focus(); nb.setSelectionRange(pos, pos); }
+          const ticket = ++LIST_DRAW;
+          const html = await viewList();
+          if(ticket !== LIST_DRAW) return;           // a newer search is on its way
+          const live = $("#q");
+          const tmp = document.createElement("div");
+          tmp.innerHTML = html;
+          const fresh = tmp.querySelector("#q");
+          const typing = !!live && live === document.activeElement;
+          const s0 = typing ? live.selectionStart : null, s1 = typing ? live.selectionEnd : null;
+          if(live && fresh){
+            if(live.value !== FILTER.q && !typing) live.value = FILTER.q;
+            fresh.replaceWith(live);
           }
+          app.replaceChildren(...tmp.childNodes);
+          // Same moment, so nothing typed can slip in between.
+          if(typing){ live.focus({ preventScroll: true }); try { live.setSelectionRange(s0, s1); } catch(e) {} }
+          setSelects();
           wire();
         };
 
@@ -3138,6 +3168,7 @@ async function render(){
         if(fc) fc.onclick = () => {
           FILTER.status = "all"; FILTER.channel = "all";
           FILTER.faults = "all"; FILTER.pay = "all"; FILTER.q = "";
+          if($("#q")) $("#q").value = "";
           PAGE = 0; redraw();
         };
 
