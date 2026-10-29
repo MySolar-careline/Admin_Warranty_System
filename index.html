@@ -430,6 +430,7 @@ function rowFromView(v, service = [], claims = []) {
                                  secondary: s.secondary_serial || "",
                                  secondaryEnd: s.secondary_warranty_end || null,
                                  formNo: s.service_form_no || "", invoiceNo: s.invoice_no || "",
+                                 lift: s.lifting || "none", craneTons: s.crane_tons,
                                  chargeable: s.chargeable === true,
                                  amount: s.amount,
                                  payStatus: s.payment_status || "not_applicable",
@@ -518,7 +519,7 @@ const DataSource = {
       sb.from("service_visits").select("*").eq("installation_id", id).order("visit_date"),
       sb.from("claims").select("*").eq("installation_id", id).order("raised_on"),
       sb.from("v_maintenance").select("*").eq("installation_id", id).order("sort_order"),
-      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override,do_no,group_key,customer_id").eq("id", id).single(),
+      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override,do_no,group_key,customer_id,lifting,crane_tons").eq("id", id).single(),
       sb.from("installation_edits").select("*").eq("installation_id", id).order("edited_at", { ascending: false })
     ]);
     if (vRes.error || !vRes.data) return null;
@@ -540,6 +541,8 @@ const DataSource = {
     row.edits       = (eRes && !eRes.error && eRes.data) ? eRes.data : [];
     row.doNo        = fRes.data ? (fRes.data.do_no || "") : "";
     row.groupKey    = fRes.data ? (fRes.data.group_key || "") : "";
+    row.lift        = fRes.data ? (fRes.data.lifting || "none") : "none";
+    row.craneTons   = fRes.data ? fRes.data.crane_tons : null;
     /* The customer's other units: for "Units in this registration" and for
        choosing which unit a visit belongs to (file 33). */
     row.customerUnits = [];
@@ -589,7 +592,8 @@ const DataSource = {
       p_guarantee_years: p.guaranteeYears ?? null,
       p_warranty_years:  p.warrantyYears ?? null,
       p_do_no: p.doNo || null,
-      p_add_to: p.addTo ? Number(p.addTo) : null
+      p_add_to: p.addTo ? Number(p.addTo) : null,
+      p_lifting: p.lift || "none", p_crane_tons: p.craneTons ?? null
     });
     if (error) throw error;
     clearListCache();
@@ -625,7 +629,9 @@ const DataSource = {
       notes:           visit.note   || null,
       secondary_serial: visit.secondary ? visit.secondary.trim().toUpperCase() : null,
       service_form_no: visit.formNo ? visit.formNo.trim() : null,
-      invoice_no:      visit.invoiceNo ? visit.invoiceNo.trim() : null
+      invoice_no:      visit.invoiceNo ? visit.invoiceNo.trim() : null,
+      lifting:         visit.lift || "none",
+      crane_tons:      visit.lift === "crane" ? visit.craneTons : null
     });
     if (error) throw error;
     clearListCache();
@@ -633,6 +639,15 @@ const DataSource = {
   },
 
   /* ---- maintenance schedule ---- */
+
+  /* Maintenance items ticked on a visit (file 34). */
+  async markMaintenanceOnVisit(installationId, codes, date, notes){
+    const { data, error } = await sb.rpc("mark_maintenance_done_on_visit", {
+      p_installation_id: Number(installationId), p_task_codes: codes, p_date: date, p_notes: notes || null });
+    if (error) throw error;
+    clearListCache();
+    return data;
+  },
 
   async markMaintenanceDone(itemId, date, notes){
     const { error } = await sb.rpc("mark_maintenance_done", {
@@ -709,7 +724,9 @@ const DataSource = {
       p_paid_on: v.paidOn || null,
       p_secondary_serial: v.secondary != null ? v.secondary : "",
       p_service_form_no: v.formNo != null ? v.formNo : "",
-      p_invoice_no:      v.invoiceNo != null ? v.invoiceNo : "" });
+      p_invoice_no:      v.invoiceNo != null ? v.invoiceNo : "",
+      p_lifting:         v.lift || null,
+      p_crane_tons:      v.lift === "crane" ? v.craneTons : null });
     if (error) throw error;
     clearListCache();
   },
@@ -722,7 +739,8 @@ const DataSource = {
       p_channel: p.channel, p_dealer_name: p.dealer || null, p_installer: p.installer || null,
       p_project_name: p.projectName || null,
       p_guarantee_years: p.guaranteeYears ?? null, p_warranty_years: p.warrantyYears ?? null,
-      p_do_no: p.doNo != null ? p.doNo : null });
+      p_do_no: p.doNo != null ? p.doNo : null,
+      p_lifting: p.lift || null, p_crane_tons: p.lift === "crane" ? p.craneTons : null });
     if (error) throw error;
     clearListCache();
     REC_CACHE = { id: null, row: null, at: 0 };
@@ -986,6 +1004,11 @@ const ZH = {
   "Guarantee":"保证期","Warranty":"保修期","Guarantee ends":"保证期至",
   "Warranty ends":"保修期至",
   "warranty until":"保修至",
+  "Crane or skylift needed?":"需要吊车或升降台吗？","Not needed":"不需要","Skylift":"升降台","Crane":"吊车",
+  "Crane lifting capacity (tons)":"吊车起重量（吨）","tons":"吨","Crane / skylift":"吊车／升降台",
+  "Please enter the crane lifting capacity in tons (more than 0, up to 500).":"请输入吊车起重量（吨），须大于0且不超过500。",
+  "Maintenance done on this visit":"本次上门完成的保养","Ticked items restart their schedule from the visit date.":"勾选的项目将从上门日期重新计算保养周期。",
+  "The visit was saved, but the maintenance schedule could not be updated:":"服务记录已保存，但保养计划未能更新：","paid on":"付款于",
   "DO No.":"送货单号","Delivery order number":"送货单号码","Units installed":"安装的机组","Add another unit":"再加一个机组",
   "Paste a list of serial numbers":"贴上一组机身号",
   "One serial number per line. Each becomes a unit with the product chosen in the last row.":"每行一个机身号。每个机身号会成为一个机组，产品与最后一行相同。",
@@ -1734,7 +1757,8 @@ function priceText(s){
   const money = v => "RM " + Number(v).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if(s.amount == null || s.amount === "" || isNaN(amt)) return t("Chargeable — amount not entered");
   if(s.payStatus === "partial" && s.amountPaid != null && !isNaN(Number(s.amountPaid)))
-    return `${money(amt)} · ${t("paid")} ${money(s.amountPaid)} · ${t("owed")} ${money(Math.max(amt - Number(s.amountPaid), 0))}`;
+    return `${money(amt)} · ${t("paid")} ${money(s.amountPaid)}${s.paidOn ? " (" + fmt(s.paidOn) + ")" : ""} · ${t("owed")} ${money(Math.max(amt - Number(s.amountPaid), 0))}`;
+  if(s.payStatus === "paid" && s.paidOn) return `${money(amt)} · ${t("paid on")} ${fmt(s.paidOn)}`;
   return money(amt);
 }
 
@@ -1745,6 +1769,51 @@ function latestSecondary(r){
   if(!list.length) return null;
   return list.slice().sort((a,b) => String(a.date).localeCompare(String(b.date))).pop();
 }
+
+/* Crane / skylift (file 34). prefix = "n" (register), "e" (edit), "sv" (visit). */
+function liftFields(prefix, lift = "none", tons = null){
+  const L = lift || "none";
+  return `<div class="row2">
+    <div class="field"><label for="${prefix}_lift">${t("Crane or skylift needed?")}</label>
+      <select id="${prefix}_lift" data-lift="${prefix}">
+        <option value="none"${L === "none" ? " selected" : ""}>${t("Not needed")}</option>
+        <option value="skylift"${L === "skylift" ? " selected" : ""}>${t("Skylift")}</option>
+        <option value="crane"${L === "crane" ? " selected" : ""}>${t("Crane")}</option></select></div>
+    <div class="field" id="${prefix}_tonsrow" style="visibility:${L === "crane" ? "visible" : "hidden"}">
+      <label for="${prefix}_tons">${t("Crane lifting capacity (tons)")}</label>
+      <input id="${prefix}_tons" type="number" min="0.5" max="500" step="0.5" value="${tons != null ? esc(tons) : ""}"></div>
+  </div>`;
+}
+function syncLift(prefix){
+  const sel = document.getElementById(prefix + "_lift"), row = document.getElementById(prefix + "_tonsrow");
+  if(sel && row) row.style.visibility = sel.value === "crane" ? "visible" : "hidden";
+}
+document.addEventListener("change", e => { if(e.target && e.target.dataset && e.target.dataset.lift) syncLift(e.target.dataset.lift); });
+/* Returns { lift, tons } or { error }. */
+function readLift(prefix){
+  const sel = document.getElementById(prefix + "_lift");
+  if(!sel) return { lift: null, tons: null };
+  if(sel.value !== "crane") return { lift: sel.value, tons: null };
+  const v = Number(document.getElementById(prefix + "_tons").value);
+  if(!v || v <= 0 || v > 500) return { error: t("Please enter the crane lifting capacity in tons (more than 0, up to 500).") };
+  return { lift: "crane", tons: v };
+}
+function liftText(lift, tons){
+  if(lift === "skylift") return t("Skylift");
+  if(lift === "crane") return `${t("Crane")}${tons != null ? ` — ${Number(tons)} ${t("tons")}` : ""}`;
+  return "";
+}
+
+/* Names in Title Case, as the database stores them (file 34):
+   first letter of every word in capitals, the rest small. */
+function titleCase(s){
+  return String(s || "").trim().replace(/\s+/g, " ").toLowerCase()
+    .replace(/(^|[^\p{L}\p{N}])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+}
+document.addEventListener("focusout", e => {
+  if(e.target && ["n_name","e_name","n_dealer","e_dealer"].includes(e.target.id) && !e.target.readOnly)
+    e.target.value = titleCase(e.target.value);
+});
 
 /* A replacement tank has its own warranty from the visit date (file 31). */
 function tankWarranty(s, withPill = true){
@@ -1781,6 +1850,7 @@ function printHistory(r){
         ${sec ? kv(t("Replacement tank S/N"), esc(sec.secondary) + " (" + fmt(sec.date) + ")" + (sec.secondaryEnd ? " — " + tankWarranty(sec, false) : "")) : ""}
         ${kv(t("Installed"), fmt(r.installDate))}
         ${r.doNo ? kv(t("DO No."), esc(r.doNo)) : ""}
+        ${liftText(r.lift, r.craneTons) ? kv(t("Crane / skylift"), esc(liftText(r.lift, r.craneTons))) : ""}
         ${c.model.guaranteeYears === 0 ? "" : kv(t("Guarantee ends"), fmt(c.gEnd))}
         ${kv(t("Warranty ends"), fmt(c.wEnd))}
         ${kv(t("Customer"), esc(r.name))}
@@ -1800,7 +1870,8 @@ function printHistory(r){
           <td>${esc(s.tech || "—")}</td>
           <td>${esc(s.parts || "—")}${s.secondary ? "<br>" + esc(t("Replacement tank S/N")) + ": " + esc(s.secondary) + (s.secondaryEnd ? "<br>" + tankWarranty(s, false) : "") : ""}</td>
           <td>${priceText(s)}${s.invoiceNo ? "<br>" + esc(t("Invoice No.")) + ": " + esc(s.invoiceNo) : ""}</td>
-          <td>${esc(s.note || "")}${s.formNo ? "<br>" + esc(t("Service Form No.")) + ": " + esc(s.formNo) : ""}</td></tr>`).join("")}
+          <td>${esc(s.note || "")}${s.formNo ? "<br>" + esc(t("Service Form No.")) + ": " + esc(s.formNo) : ""}${
+            liftText(s.lift, s.craneTons) ? "<br>" + esc(t("Crane / skylift")) + ": " + esc(liftText(s.lift, s.craneTons)) : ""}</td></tr>`).join("")}
         </tbody></table>` : `<p>${esc(t("No service visits recorded."))}</p>`}
       <p class="ph-foot">${esc(t("Internal record — contains customer personal data. Do not leave it with anyone outside MySolar."))}</p>
     </div>`;
@@ -1844,6 +1915,7 @@ async function viewDetail(id){
         <dt>${t("Price charged")}</dt><dd>${priceText(s)}</dd>
         ${s.formNo ? `<dt>${t("Service Form No.")}</dt><dd class="mono">${esc(s.formNo)}</dd>` : ""}
         ${s.invoiceNo ? `<dt>${t("Invoice No.")}</dt><dd class="mono">${esc(s.invoiceNo)}</dd>` : ""}
+        ${liftText(s.lift, s.craneTons) ? `<dt>${t("Crane / skylift")}</dt><dd>${esc(liftText(s.lift, s.craneTons))}</dd>` : ""}
         ${s.secondary ? `<dt>${t("Replacement tank S/N")}</dt><dd><span class="mono">${esc(s.secondary)}</span>${
             s.secondaryEnd && !s.voided ? `<div class="tiny">${tankWarranty(s)}</div>` : ""}</dd>` : ""}
         ${s.note ? `<dt>${t("Notes")}</dt><dd>${esc(s.note)}</dd>` : ""}
@@ -1883,6 +1955,17 @@ async function viewDetail(id){
           String(u.id) === String(r.id) ? " (" + t("this unit") + ")" : ""}</option>`).join("")}</select>
         <div class="tiny muted" style="margin-top:4px">${t("This customer has")} ${liveUnits.length} ${t("units. The visit is saved on the unit chosen here.")}</div></div>` : "";
 
+  /* Maintenance done on this visit (file 34): ticking an item restarts its
+     schedule from the visit date, so a part replaced on a visit moves the
+     next reminder too. */
+  const mItems = (r.maintenance || []).filter(mm => mm.active);
+  const maintTick = mItems.length ? `
+      <div class="field" id="sv_maintrow"><label>${t("Maintenance done on this visit")}</label>
+        <div style="display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:2px">${mItems.map(mm => `
+          <label style="display:flex;gap:8px;align-items:center;font-family:var(--body);font-size:.93rem;letter-spacing:0;text-transform:none;color:var(--ink);cursor:pointer;margin:0">
+            <input type="checkbox" data-mtask="${esc(mm.task_code)}" style="width:17px;height:17px;flex:none"> ${esc(maintLabel(mm))}</label>`).join("")}</div>
+        <div class="tiny muted" style="margin-top:4px">${t("Ticked items restart their schedule from the visit date.")}</div></div>` : "";
+
   const svcForm = `
     <div class="fu-panel" id="svcPanel">
       ${unitPick}
@@ -1898,12 +1981,14 @@ async function viewDetail(id){
         <div class="field"><label for="sv_parts">${t("Parts replaced")}</label>
           <input id="sv_parts" placeholder="Leave blank if none"></div>
       </div>
+      ${maintTick}
       <div class="field"><label for="sv_sn2">${t("Replacement tank S/N")}</label>
         <input id="sv_sn2" class="mono" placeholder="${t("Only if the tank was replaced on this visit")}"></div>
       <div class="row2">
         <div class="field"><label for="sv_form">${t("Service Form No.")}</label><input id="sv_form" class="mono"></div>
         <div class="field"><label for="sv_inv">${t("Invoice No.")}</label><input id="sv_inv" class="mono"></div>
       </div>
+      ${liftFields("sv")}
       <div class="row2">
         <div class="field"><label for="sv_chg">${t("Chargeable")}</label>
           <select id="sv_chg"><option value="no">${t("No — under warranty")}</option>
@@ -1922,7 +2007,7 @@ async function viewDetail(id){
           <input id="sv_due" type="date"></div>
       </div>
       <div class="row2" id="sv_paidrow" style="display:none">
-        <div class="field"><label for="sv_paid">${t("Amount already paid (RM)")}</label>
+        <div class="field" id="sv_paidamt"><label for="sv_paid">${t("Amount already paid (RM)")}</label>
           <input id="sv_paid" type="number" step="0.01" placeholder="0.00"></div>
         <div class="field"><label for="sv_paidon">${t("Paid on")}</label>
           <input id="sv_paidon" type="date"></div>
@@ -2001,6 +2086,7 @@ async function viewDetail(id){
             ${c.model.category ? `<dt>${t("Category")}</dt><dd>${esc(c.model.category)}</dd>` : ""}
             <dt>${t("Installed")}</dt><dd>${fmt(r.installDate)}</dd>
             ${r.doNo ? `<dt>${t("DO No.")}</dt><dd class="mono">${esc(r.doNo)}</dd>` : ""}
+            ${liftText(r.lift, r.craneTons) ? `<dt>${t("Crane / skylift")}</dt><dd><span class="pill a">${esc(liftText(r.lift, r.craneTons))}</span></dd>` : ""}
             ${c.model.guaranteeYears === 0 ? "" : `<dt>${t("Guarantee ends")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>`}
             <dt>${t("Warranty ends")}${warrantyTerm(c.model)}</dt><dd>${fmt(c.wEnd)}</dd>
           </dl>
@@ -2100,6 +2186,7 @@ async function viewEdit(id){
       <div class="row2">
         <div class="field"><label for="e_date">${t("Install date")}</label><input id="e_date" type="date" value="${val(r.installDate)}"></div>
         <div class="field"><label for="e_installer">${t("Installed by")}</label><input id="e_installer" value="${val(r.installer)}"></div></div>
+      ${liftFields("e", r.lift, r.craneTons)}
       <div class="row2">
         <div class="field"><label for="e_channel">${t("Sold via")}</label>
           <select id="e_channel">${CHANNELS.map(c => `<option value="${c.v}"${c.v === ch ? " selected" : ""}>${t(c.label)}</option>`).join("")}</select></div>
@@ -2149,6 +2236,8 @@ function wireEdit(id){
     const chv = ch.value, gy = v("e_gy"), wy = v("e_wy");
     if(chv === "project" && (gy === "" || wy === "" || +gy < 0 || +gy > 30 || +wy < 0 || +wy > 30))
       return err(t("For a Project, enter the guarantee and warranty years (0 to 30)."));
+    const lf = readLift("e");
+    if(lf.error) return err(lf.error);
     const b = $("#eSave"); b.disabled = true; b.textContent = t("Saving…");
     try{
       await DataSource.updateDetails(id, {
@@ -2157,7 +2246,7 @@ function wireEdit(id){
         area: v("e_area"), state: $("#e_state").value,
         model: mdl.value, serial: normalizeSerial(v("e_serial")), installDate: v("e_date"),
         channel: chv, dealer: (chv === "dealer" || chv === "contractor") ? v("e_dealer") : "",
-        installer: v("e_installer"),
+        installer: v("e_installer"), lift: lf.lift, craneTons: lf.tons,
         projectName: chv === "project" ? v("e_proj") : "",
         guaranteeYears: chv === "project" ? Number(gy) : null,
         warrantyYears:  chv === "project" ? Number(wy) : null });
@@ -2262,6 +2351,7 @@ function viewNew(){
         <p class="tiny muted" style="margin:0 0 10px">${t("Filled in from the product's standard terms. Change them to match this project's agreement.")}</p>
       </fieldset>
       <div class="field"><label for="n_installer">${t("Installed by")}</label><input id="n_installer"></div>
+      ${liftFields("n")}
 
       <div class="consent" id="n_consentrow">
         <label style="display:flex;gap:10px;align-items:flex-start;font-family:var(--body);
@@ -2953,7 +3043,8 @@ const FIELD_LABELS = {
   advance_notice_days:"Notice (days)", recurring:"Repeats", label:"Name",
   blacklisted:"Blacklisted", blacklist_reason:"Blacklist reason", consent_given_at:"Consent given", consent_method:"Consent method",
   email_admin:"Email", reason:"Reason", customer_deleted:"Customer deleted too",
-  do_no:"DO No.", service_form_no:"Service Form No.", invoice_no:"Invoice No."
+  do_no:"DO No.", service_form_no:"Service Form No.", invoice_no:"Invoice No.",
+  lifting:"Crane / skylift", crane_tons:"Crane capacity (tons)"
 };
 /* Bookkeeping columns: true, but noise on screen. */
 const FIELD_HIDDEN = new Set(["voided_at","voided_by","completed_at","completed_by","blacklisted_at","added_at","added_by",
@@ -3286,6 +3377,7 @@ async function render(){
               setv("n_addr1", g.site1); setv("n_addr2", g.site2); setv("n_postcode", g.sitePostcode);
               setv("n_area", g.siteArea); if(g.siteState) setv("n_state", g.siteState);
               setv("n_date", g.installDate); setv("n_installer", g.installer);
+              setv("n_lift", g.lift); setv("n_tons", g.craneTons ?? ""); syncLift("n");
               if(MODELS[g.model]) setv("n_model", g.model);
               const chv0 = g.channel === "direct" ? "end_user" : g.channel;
               setv("n_channel", chv0); syncChannel();
@@ -3327,6 +3419,8 @@ async function render(){
           if(!isHist && !$("#n_consent").checked){
             showMsg("nErr", `<div class="err">${t("The customer must be shown the privacy notice and agree before their details can be saved.")}</div>`); return;
           }
+          const lf = readLift("n");
+          if(lf.error){ showMsg("nErr", `<div class="err">${lf.error}</div>`); return; }
           const chv = $("#n_channel").value;
           const gy = $("#n_gy").value, wy = $("#n_wy").value;
           if(chv === "project" && (gy === "" || wy === "" || +gy < 0 || +gy > 30 || +wy < 0 || +wy > 30)){
@@ -3373,7 +3467,7 @@ async function render(){
               name:v("n_name"), phone:normalizePhone(v("n_phone")) || v("n_phone"), doNo:v("n_do"),
               address1:v("n_addr1"), address2:v("n_addr2"), postcode:v("n_postcode"),
               area:v("n_area"), state:$("#n_state").value, installDate:v("n_date"),
-              units, addTo, channel:chv,
+              units, addTo, channel:chv, lift: lf.lift, craneTons: lf.tons,
               dealer:(chv === "dealer" || chv === "contractor") ? v("n_dealer") : "",
               installer:v("n_installer"),
               projectName: chv === "project" ? v("n_proj") : "",
@@ -3420,6 +3514,7 @@ async function render(){
           $("#sv_editing").value = "";
           setVisitType(null);
           if($("#sv_unitrow")){ $("#sv_unitrow").style.display = ""; $("#sv_unit").value = String(m[1]); }
+          if($("#sv_maintrow")) $("#sv_maintrow").style.display = "";
           $("#sv_save").textContent = t("Save visit");
           const cb = $("#sv_cancel"); if(cb) cb.style.display = "none";
           panel.classList.toggle("show");
@@ -3436,9 +3531,15 @@ async function render(){
           /* How much was paid only makes sense for a part payment. Without it
              the whole amount showed as outstanding, which then fed the
              automatic blacklist. */
+          /* File 34: the payment date shows for "Paid in full" too, and is
+             kept for a part payment (it used to be thrown away). */
           const pay = $("#sv_pay"), paidRow = $("#sv_paidrow");
-          if(paidRow) paidRow.style.display =
-            (chargeable && pay && pay.value === "partial") ? "" : "none";
+          const ps = pay ? pay.value : "unpaid";
+          if(paidRow) paidRow.style.display = (chargeable && (ps === "partial" || ps === "paid")) ? "" : "none";
+          const amtWrap = $("#sv_paidamt");
+          if(amtWrap) amtWrap.style.display = ps === "partial" ? "" : "none";
+          const po = $("#sv_paidon");
+          if(po && chargeable && ps === "paid" && !po.value) po.value = todayISO();
         };
         if(chg){ chg.onchange = syncPay; }
         const payStatusSel = $("#sv_pay");
@@ -3596,8 +3697,10 @@ async function render(){
             if($("#sv_sn2")) $("#sv_sn2").value = v.secondary || "";
             if($("#sv_form")) $("#sv_form").value = v.formNo || "";
             if($("#sv_inv"))  $("#sv_inv").value  = v.invoiceNo || "";
-            /* A saved visit stays on its unit. */
+            /* A saved visit stays on its unit; maintenance is ticked when logging. */
             if($("#sv_unitrow")) $("#sv_unitrow").style.display = "none";
+            if($("#sv_maintrow")) $("#sv_maintrow").style.display = "none";
+            if($("#sv_lift")){ $("#sv_lift").value = v.lift || "none"; $("#sv_tons").value = v.craneTons ?? ""; syncLift("sv"); }
             $("#sv_chg").value   = v.chargeable ? "yes" : "no";
             $("#sv_amt").value   = v.amount ?? "";
             syncPay();
@@ -3652,7 +3755,9 @@ async function render(){
           if(!$("#sv_date").value){
             $("#svErr").innerHTML = `<div class="err">Visit date is required.</div>`; return;
           }
-          if(!$("#sv_note").value.trim()){
+          const lfv = readLift("sv");
+          if(lfv.error){ $("#svErr").innerHTML = `<div class="err">${lfv.error}</div>`; return; }
+          if($("#sv_note").value.trim().length < 2){
             $("#svErr").innerHTML = `<div class="err">Please record what was done — this is what stops the same fault being guessed at twice.</div>`; return;
           }
           saveBtn.disabled = true; saveBtn.textContent = "Saving…";
@@ -3672,7 +3777,8 @@ async function render(){
                 note: $("#sv_note").value.trim(),
                 secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : "",
                 formNo: $("#sv_form") ? $("#sv_form").value.trim() : "",
-                invoiceNo: $("#sv_inv") ? $("#sv_inv").value.trim() : ""
+                invoiceNo: $("#sv_inv") ? $("#sv_inv").value.trim() : "",
+                lift: lfv.lift, craneTons: lfv.tons
               });
               render();
               return;
@@ -3688,11 +3794,21 @@ async function render(){
               amount: $("#sv_amt").value,
               payStatus: $("#sv_pay") ? $("#sv_pay").value : "unpaid",
               dueOn: $("#sv_due") ? $("#sv_due").value : null,
+              amountPaid: $("#sv_paid") ? $("#sv_paid").value : null,     // file 34: was not sent for a new visit
+              paidOn: $("#sv_paidon") ? $("#sv_paidon").value : null,
               note:  $("#sv_note").value.trim(),
               secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : "",
               formNo: $("#sv_form") ? $("#sv_form").value.trim() : "",
-              invoiceNo: $("#sv_inv") ? $("#sv_inv").value.trim() : ""
+              invoiceNo: $("#sv_inv") ? $("#sv_inv").value.trim() : "",
+              lift: lfv.lift, craneTons: lfv.tons
             });
+
+            /* Maintenance ticked on this visit restarts from the visit date. */
+            const mCodes = [...document.querySelectorAll("[data-mtask]:checked")].map(x => x.dataset.mtask);
+            if(mCodes.length){
+              try { await DataSource.markMaintenanceOnVisit(unitId, mCodes, $("#sv_date").value, $("#sv_note").value.trim()); }
+              catch(e){ alert(t("The visit was saved, but the maintenance schedule could not be updated:") + " " + (e.message || e)); }
+            }
 
             /* The whole point of the feature: the moment a unit crosses the
                threshold, tell the owners. Don't wait for tomorrow's digest. */
