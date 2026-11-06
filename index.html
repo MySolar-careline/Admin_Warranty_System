@@ -431,6 +431,7 @@ function rowFromView(v, service = [], claims = []) {
                                  secondaryEnd: s.secondary_warranty_end || null,
                                  formNo: s.service_form_no || "", invoiceNo: s.invoice_no || "",
                                  lift: s.lifting || "none", craneTons: s.crane_tons,
+                                 tankAnode: s.tank_has_anode,
                                  chargeable: s.chargeable === true,
                                  amount: s.amount,
                                  payStatus: s.payment_status || "not_applicable",
@@ -519,7 +520,7 @@ const DataSource = {
       sb.from("service_visits").select("*").eq("installation_id", id).order("visit_date"),
       sb.from("claims").select("*").eq("installation_id", id).order("raised_on"),
       sb.from("v_maintenance").select("*").eq("installation_id", id).order("sort_order"),
-      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override,do_no,group_key,customer_id,lifting,crane_tons").eq("id", id).single(),
+      sb.from("installations").select("has_filter,filter_install_date,voided_by,voided_at,project_name,guarantee_years_override,warranty_years_override,do_no,group_key,customer_id,lifting,crane_tons,has_anode").eq("id", id).single(),
       sb.from("installation_edits").select("*").eq("installation_id", id).order("edited_at", { ascending: false })
     ]);
     if (vRes.error || !vRes.data) return null;
@@ -543,6 +544,7 @@ const DataSource = {
     row.groupKey    = fRes.data ? (fRes.data.group_key || "") : "";
     row.lift        = fRes.data ? (fRes.data.lifting || "none") : "none";
     row.craneTons   = fRes.data ? fRes.data.crane_tons : null;
+    row.hasAnode    = fRes.data ? fRes.data.has_anode !== false : true;
     /* The customer's other units: for "Units in this registration" and for
        choosing which unit a visit belongs to (file 33). */
     row.customerUnits = [];
@@ -552,6 +554,9 @@ const DataSource = {
         .select("id,warranty_no,serial_no,model_code,group_key,voided,install_date")
         .eq("customer_id", custId).order("install_date").order("id");
       row.customerUnits = Array.isArray(units) ? units : [];
+      /* Other contact numbers (file 35). */
+      const { data: cust } = await sb.from("customers").select("other_phones").eq("id", custId).single();
+      row.otherPhones = cust && Array.isArray(cust.other_phones) ? cust.other_phones : [];
     }
     REC_CACHE = { id, row, at: Date.now() };
     return row;
@@ -593,7 +598,8 @@ const DataSource = {
       p_warranty_years:  p.warrantyYears ?? null,
       p_do_no: p.doNo || null,
       p_add_to: p.addTo ? Number(p.addTo) : null,
-      p_lifting: p.lift || "none", p_crane_tons: p.craneTons ?? null
+      p_lifting: p.lift || "none", p_crane_tons: p.craneTons ?? null,
+      p_has_anode: p.hasAnode ?? null, p_other_phones: p.otherPhones || []
     });
     if (error) throw error;
     clearListCache();
@@ -631,7 +637,8 @@ const DataSource = {
       service_form_no: visit.formNo ? visit.formNo.trim() : null,
       invoice_no:      visit.invoiceNo ? visit.invoiceNo.trim() : null,
       lifting:         visit.lift || "none",
-      crane_tons:      visit.lift === "crane" ? visit.craneTons : null
+      crane_tons:      visit.lift === "crane" ? visit.craneTons : null,
+      tank_has_anode:  visit.secondary ? (visit.tankAnode ?? null) : null
     });
     if (error) throw error;
     clearListCache();
@@ -740,7 +747,8 @@ const DataSource = {
       p_project_name: p.projectName || null,
       p_guarantee_years: p.guaranteeYears ?? null, p_warranty_years: p.warrantyYears ?? null,
       p_do_no: p.doNo != null ? p.doNo : null,
-      p_lifting: p.lift || null, p_crane_tons: p.lift === "crane" ? p.craneTons : null });
+      p_lifting: p.lift || null, p_crane_tons: p.lift === "crane" ? p.craneTons : null,
+      p_has_anode: p.hasAnode ?? null, p_other_phones: p.otherPhones ?? null });
     if (error) throw error;
     clearListCache();
     REC_CACHE = { id: null, row: null, at: 0 };
@@ -1004,6 +1012,12 @@ const ZH = {
   "Guarantee":"保证期","Warranty":"保修期","Guarantee ends":"保证期至",
   "Warranty ends":"保修期至",
   "warranty until":"保修至",
+  "Other contact numbers (optional)":"其他联络号码（可不填）","Add contact number":"添加联络号码","Other numbers":"其他号码",
+  "Up to 5 numbers per customer, including the main one.":"每位客户最多5个号码（包括主要号码）。",
+  "This contact number is not valid":"此联络号码无效","Anode":"镁棒",
+  "Comes with an anode":"附带镁棒","(solar water heaters and tanks; untick if not)":"（适用于太阳能热水器和水箱；若无请取消勾选）",
+  "New tank has anode":"新水箱附带镁棒","Does the new tank come with an anode?":"新水箱是否附带镁棒？",
+  "Yes restarts the anode inspection reminder from the visit date.":"选「是」将从上门日期重新计算镁棒检查提醒。",
   "Crane or skylift needed?":"需要吊车或升降台吗？","Not needed":"不需要","Skylift":"升降台","Crane":"吊车",
   "Crane lifting capacity (tons)":"吊车起重量（吨）","tons":"吨","Crane / skylift":"吊车／升降台",
   "Please enter the crane lifting capacity in tons (more than 0, up to 500).":"请输入吊车起重量（吨），须大于0且不超过500。",
@@ -1770,6 +1784,61 @@ function latestSecondary(r){
   return list.slice().sort((a,b) => String(a.date).localeCompare(String(b.date))).pop();
 }
 
+/* Heaters and tanks can have an anode; panels and filters never do (file 35). */
+const takesAnode = code => { const k = (MODELS[code] || {}).kind || "heater"; return k === "heater" || k === "tank"; };
+
+/* Other contact numbers (file 35): the main phone plus up to 4 more.
+   prefix = "n" (register) or "e" (edit). */
+const MAX_OTHER_PHONES = 4;
+function phoneRow(val = ""){
+  return `<div data-ophone style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+    <input data-ophone-in value="${esc(val)}" placeholder="012-345 6789" style="flex:1">
+    <button type="button" class="lnk" data-rmphone style="color:var(--red);white-space:nowrap">${t("Remove")}</button></div>`;
+}
+function otherPhonesBlock(prefix, list = []){
+  return `<div class="field" style="margin-bottom:12px"><label>${t("Other contact numbers (optional)")}</label>
+    <div id="${prefix}_ophones">${list.map(phoneRow).join("")}</div>
+    <button type="button" class="btn btn-s" id="${prefix}_addphone" data-addphone="${prefix}"
+      style="padding:6px 12px;font-size:.85rem${list.length >= MAX_OTHER_PHONES ? ";display:none" : ""}">+ ${t("Add contact number")}</button>
+    <div class="tiny muted" style="margin-top:4px">${t("Up to 5 numbers per customer, including the main one.")}</div></div>`;
+}
+function syncPhoneAdd(prefix){
+  const box = document.getElementById(prefix + "_ophones"), add = document.getElementById(prefix + "_addphone");
+  if(box && add) add.style.display = box.querySelectorAll("[data-ophone]").length >= MAX_OTHER_PHONES ? "none" : "";
+}
+document.addEventListener("click", e => {
+  const add = e.target.closest && e.target.closest("[data-addphone]");
+  if(add){
+    const prefix = add.dataset.addphone, box = document.getElementById(prefix + "_ophones");
+    if(box.querySelectorAll("[data-ophone]").length < MAX_OTHER_PHONES){
+      box.insertAdjacentHTML("beforeend", phoneRow());
+      box.lastElementChild.querySelector("input").focus();
+    }
+    syncPhoneAdd(prefix); return;
+  }
+  const rm = e.target.closest && e.target.closest("[data-rmphone]");
+  if(rm){
+    const row = rm.closest("[data-ophone]"), box = row.parentElement;
+    row.remove(); syncPhoneAdd(box.id.replace(/_ophones$/, ""));
+  }
+});
+document.addEventListener("focusout", e => {
+  if(e.target && e.target.matches && e.target.matches("[data-ophone-in]")){
+    const f = normalizePhone(e.target.value); if(f) e.target.value = f;
+  }
+});
+/* Returns { list } or { error }. */
+function readOtherPhones(prefix){
+  const out = [];
+  for(const inp of document.querySelectorAll(`#${prefix}_ophones [data-ophone-in]`)){
+    const v = inp.value.trim(); if(!v) continue;
+    const f = normalizePhone(v);
+    if(!f) return { error: `${t("This contact number is not valid")}: ${v}` };
+    out.push(f);
+  }
+  return { list: out };
+}
+
 /* Crane / skylift (file 34). prefix = "n" (register), "e" (edit), "sv" (visit). */
 function liftFields(prefix, lift = "none", tons = null){
   const L = lift || "none";
@@ -1854,7 +1923,8 @@ function printHistory(r){
         ${c.model.guaranteeYears === 0 ? "" : kv(t("Guarantee ends"), fmt(c.gEnd))}
         ${kv(t("Warranty ends"), fmt(c.wEnd))}
         ${kv(t("Customer"), esc(r.name))}
-        ${kv(t("Phone"), esc(r.phone))}
+        ${kv(t("Phone"), [r.phone, ...(r.otherPhones || [])].map(esc).join(" / "))}
+        ${takesAnode(r.model) ? kv(t("Anode"), r.hasAnode !== false ? t("Yes") : t("No")) : ""}
         ${kv(t("Installation address"), esc(r.address || "—"))}
       </table>
       ${maint.length ? `<h4>${esc(t("Maintenance schedule"))}</h4>
@@ -1916,6 +1986,7 @@ async function viewDetail(id){
         ${s.formNo ? `<dt>${t("Service Form No.")}</dt><dd class="mono">${esc(s.formNo)}</dd>` : ""}
         ${s.invoiceNo ? `<dt>${t("Invoice No.")}</dt><dd class="mono">${esc(s.invoiceNo)}</dd>` : ""}
         ${liftText(s.lift, s.craneTons) ? `<dt>${t("Crane / skylift")}</dt><dd>${esc(liftText(s.lift, s.craneTons))}</dd>` : ""}
+        ${s.secondary && s.tankAnode != null ? `<dt>${t("New tank has anode")}</dt><dd>${s.tankAnode ? t("Yes") : t("No")}</dd>` : ""}
         ${s.secondary ? `<dt>${t("Replacement tank S/N")}</dt><dd><span class="mono">${esc(s.secondary)}</span>${
             s.secondaryEnd && !s.voided ? `<div class="tiny">${tankWarranty(s)}</div>` : ""}</dd>` : ""}
         ${s.note ? `<dt>${t("Notes")}</dt><dd>${esc(s.note)}</dd>` : ""}
@@ -1984,6 +2055,9 @@ async function viewDetail(id){
       ${maintTick}
       <div class="field"><label for="sv_sn2">${t("Replacement tank S/N")}</label>
         <input id="sv_sn2" class="mono" placeholder="${t("Only if the tank was replaced on this visit")}"></div>
+      <div class="field" id="sv_tankanoderow" style="display:none;max-width:320px"><label for="sv_tankanode">${t("Does the new tank come with an anode?")}</label>
+        <select id="sv_tankanode"><option value="yes">${t("Yes")}</option><option value="no">${t("No")}</option></select>
+        <div class="tiny muted" style="margin-top:4px">${t("Yes restarts the anode inspection reminder from the visit date.")}</div></div>
       <div class="row2">
         <div class="field"><label for="sv_form">${t("Service Form No.")}</label><input id="sv_form" class="mono"></div>
         <div class="field"><label for="sv_inv">${t("Invoice No.")}</label><input id="sv_inv" class="mono"></div>
@@ -2087,6 +2161,7 @@ async function viewDetail(id){
             <dt>${t("Installed")}</dt><dd>${fmt(r.installDate)}</dd>
             ${r.doNo ? `<dt>${t("DO No.")}</dt><dd class="mono">${esc(r.doNo)}</dd>` : ""}
             ${liftText(r.lift, r.craneTons) ? `<dt>${t("Crane / skylift")}</dt><dd><span class="pill a">${esc(liftText(r.lift, r.craneTons))}</span></dd>` : ""}
+            ${takesAnode(r.model) ? `<dt>${t("Anode")}</dt><dd>${r.hasAnode !== false ? t("Yes") : t("No")}</dd>` : ""}
             ${c.model.guaranteeYears === 0 ? "" : `<dt>${t("Guarantee ends")}${c.model.guaranteeYears ? ` (${c.model.guaranteeYears} ${t("yr")})` : ""}</dt><dd>${fmt(c.gEnd)}</dd>`}
             <dt>${t("Warranty ends")}${warrantyTerm(c.model)}</dt><dd>${fmt(c.wEnd)}</dd>
           </dl>
@@ -2103,6 +2178,8 @@ async function viewDetail(id){
           <dl class="kv">
             <dt>${t("Name")}</dt><dd>${esc(r.name)}</dd>
             <dt>${t("Phone")}</dt><dd>${esc(r.phone)}</dd>
+            ${(r.otherPhones || []).length ? `<dt>${t("Other numbers")}</dt><dd>${r.otherPhones.map(p =>
+              `<div>${esc(p)} <a class="tiny" target="_blank" rel="noopener" href="https://wa.me/${waNumber(p)}">WhatsApp</a></div>`).join("")}</dd>` : ""}
             ${r.email ? `<dt>${t("Email")}</dt><dd style="word-break:break-all">${esc(r.email)}</dd>` : ""}
             <dt>${t("Area")}</dt><dd>${esc(r.area||"—")}</dd></dl>
           <div class="card-pad" style="border-top:1px solid var(--line);padding-top:14px">
@@ -2167,6 +2244,7 @@ async function viewEdit(id){
         <div class="row2">
           <div class="field"><label for="e_phone">${t("Phone")}</label><input id="e_phone" value="${val(r.phone)}"></div>
           <input type="hidden" id="e_email" value="${val(r.email)}"></div>
+        ${otherPhonesBlock("e", r.otherPhones || [])}
       </fieldset>
       <fieldset class="addr">
         <legend>${t("Installation site address")}</legend>
@@ -2187,6 +2265,9 @@ async function viewEdit(id){
         <div class="field"><label for="e_date">${t("Install date")}</label><input id="e_date" type="date" value="${val(r.installDate)}"></div>
         <div class="field"><label for="e_installer">${t("Installed by")}</label><input id="e_installer" value="${val(r.installer)}"></div></div>
       ${liftFields("e", r.lift, r.craneTons)}
+      <label style="display:flex;gap:10px;align-items:center;font-family:var(--body);font-size:.93rem;letter-spacing:0;text-transform:none;color:var(--ink);cursor:pointer;margin:0 0 14px">
+        <input type="checkbox" id="e_anode" ${r.hasAnode !== false ? "checked" : ""} style="width:18px;height:18px;flex:none">
+        <span>${t("Comes with an anode")} <span class="tiny muted">${t("(solar water heaters and tanks; untick if not)")}</span></span></label>
       <div class="row2">
         <div class="field"><label for="e_channel">${t("Sold via")}</label>
           <select id="e_channel">${CHANNELS.map(c => `<option value="${c.v}"${c.v === ch ? " selected" : ""}>${t(c.label)}</option>`).join("")}</select></div>
@@ -2238,6 +2319,8 @@ function wireEdit(id){
       return err(t("For a Project, enter the guarantee and warranty years (0 to 30)."));
     const lf = readLift("e");
     if(lf.error) return err(lf.error);
+    const op = readOtherPhones("e");
+    if(op.error) return err(op.error);
     const b = $("#eSave"); b.disabled = true; b.textContent = t("Saving…");
     try{
       await DataSource.updateDetails(id, {
@@ -2247,6 +2330,7 @@ function wireEdit(id){
         model: mdl.value, serial: normalizeSerial(v("e_serial")), installDate: v("e_date"),
         channel: chv, dealer: (chv === "dealer" || chv === "contractor") ? v("e_dealer") : "",
         installer: v("e_installer"), lift: lf.lift, craneTons: lf.tons,
+        otherPhones: op.list, hasAnode: $("#e_anode").checked,
         projectName: chv === "project" ? v("e_proj") : "",
         guaranteeYears: chv === "project" ? Number(gy) : null,
         warrantyYears:  chv === "project" ? Number(wy) : null });
@@ -2310,6 +2394,7 @@ function viewNew(){
       <div class="row2">
         <div class="field"><label for="n_phone">${t("Phone")}</label><input id="n_phone" placeholder="012-345 6789"></div>
         <div class="field"><label for="n_do">${t("DO No.")}</label><input id="n_do" class="mono" placeholder="${t("Delivery order number")}"></div></div>
+      ${otherPhonesBlock("n")}
       <fieldset class="addr">
         <legend>${t("Installation site address")}</legend>
         <div class="field"><label for="n_addr1">${t("Address 1")}</label>
@@ -2337,6 +2422,9 @@ function viewNew(){
           <textarea id="n_pastetxt" rows="5" class="mono" style="width:100%"></textarea>
           <button type="button" class="btn btn-s" id="n_pasteGo" style="margin-top:6px">${t("Add these units")}</button></div>
         <p class="tiny muted" style="margin:0 0 10px">${t("Each unit gets its own warranty number, coverage, maintenance schedule and service history. They are kept together as one registration, with the same customer, address and DO No.")}</p>
+        <label style="display:flex;gap:10px;align-items:center;font-family:var(--body);font-size:.93rem;letter-spacing:0;text-transform:none;color:var(--ink);cursor:pointer;margin:0 0 10px">
+          <input type="checkbox" id="n_anode" checked style="width:18px;height:18px;flex:none">
+          <span>${t("Comes with an anode")} <span class="tiny muted">${t("(solar water heaters and tanks; untick if not)")}</span></span></label>
       </fieldset>
       <div class="row2">
         <div class="field"><label for="n_channel">${t("Sold via")}</label>
@@ -3044,7 +3132,8 @@ const FIELD_LABELS = {
   blacklisted:"Blacklisted", blacklist_reason:"Blacklist reason", consent_given_at:"Consent given", consent_method:"Consent method",
   email_admin:"Email", reason:"Reason", customer_deleted:"Customer deleted too",
   do_no:"DO No.", service_form_no:"Service Form No.", invoice_no:"Invoice No.",
-  lifting:"Crane / skylift", crane_tons:"Crane capacity (tons)"
+  lifting:"Crane / skylift", crane_tons:"Crane capacity (tons)",
+  other_phones:"Other contact numbers", has_anode:"Comes with anode", tank_has_anode:"New tank has anode"
 };
 /* Bookkeeping columns: true, but noise on screen. */
 const FIELD_HIDDEN = new Set(["voided_at","voided_by","completed_at","completed_by","blacklisted_at","added_at","added_by",
@@ -3341,6 +3430,7 @@ async function render(){
         hist.onchange = syncHist; syncHist();
         const ph = $("#n_phone");
         ph.addEventListener("blur", () => { const f = normalizePhone(ph.value); if(f) ph.value = f; });
+
         const pc = $("#n_postcode");
         keepDigits(pc, 5);
         const sn = $("#n_serial");
@@ -3378,6 +3468,7 @@ async function render(){
               setv("n_area", g.siteArea); if(g.siteState) setv("n_state", g.siteState);
               setv("n_date", g.installDate); setv("n_installer", g.installer);
               setv("n_lift", g.lift); setv("n_tons", g.craneTons ?? ""); syncLift("n");
+              $("#n_anode").checked = g.hasAnode !== false;
               if(MODELS[g.model]) setv("n_model", g.model);
               const chv0 = g.channel === "direct" ? "end_user" : g.channel;
               setv("n_channel", chv0); syncChannel();
@@ -3421,6 +3512,8 @@ async function render(){
           }
           const lf = readLift("n");
           if(lf.error){ showMsg("nErr", `<div class="err">${lf.error}</div>`); return; }
+          const op = readOtherPhones("n");
+          if(op.error){ showMsg("nErr", `<div class="err">${esc(op.error)}</div>`); return; }
           const chv = $("#n_channel").value;
           const gy = $("#n_gy").value, wy = $("#n_wy").value;
           if(chv === "project" && (gy === "" || wy === "" || +gy < 0 || +gy > 30 || +wy < 0 || +wy > 30)){
@@ -3468,6 +3561,7 @@ async function render(){
               address1:v("n_addr1"), address2:v("n_addr2"), postcode:v("n_postcode"),
               area:v("n_area"), state:$("#n_state").value, installDate:v("n_date"),
               units, addTo, channel:chv, lift: lf.lift, craneTons: lf.tons,
+              otherPhones: op.list, hasAnode: $("#n_anode").checked,
               dealer:(chv === "dealer" || chv === "contractor") ? v("n_dealer") : "",
               installer:v("n_installer"),
               projectName: chv === "project" ? v("n_proj") : "",
@@ -3519,6 +3613,13 @@ async function render(){
           const cb = $("#sv_cancel"); if(cb) cb.style.display = "none";
           panel.classList.toggle("show");
         };
+
+        /* New tank anode question: only when a replacement tank S/N is typed, and
+           only when logging a visit (file 35). */
+        const sn2In = $("#sv_sn2"), taRow = $("#sv_tankanoderow");
+        const syncTankAnode = () => { if(sn2In && taRow)
+          taRow.style.display = (sn2In.value.trim() && !$("#sv_editing").value) ? "" : "none"; };
+        if(sn2In) sn2In.addEventListener("input", syncTankAnode);
 
         const payRow = $("#sv_payrow"), chg = $("#sv_chg");
         const syncPay = () => {
@@ -3700,6 +3801,7 @@ async function render(){
             /* A saved visit stays on its unit; maintenance is ticked when logging. */
             if($("#sv_unitrow")) $("#sv_unitrow").style.display = "none";
             if($("#sv_maintrow")) $("#sv_maintrow").style.display = "none";
+            if($("#sv_tankanoderow")) $("#sv_tankanoderow").style.display = "none";
             if($("#sv_lift")){ $("#sv_lift").value = v.lift || "none"; $("#sv_tons").value = v.craneTons ?? ""; syncLift("sv"); }
             $("#sv_chg").value   = v.chargeable ? "yes" : "no";
             $("#sv_amt").value   = v.amount ?? "";
@@ -3800,7 +3902,8 @@ async function render(){
               secondary: $("#sv_sn2") ? $("#sv_sn2").value.trim() : "",
               formNo: $("#sv_form") ? $("#sv_form").value.trim() : "",
               invoiceNo: $("#sv_inv") ? $("#sv_inv").value.trim() : "",
-              lift: lfv.lift, craneTons: lfv.tons
+              lift: lfv.lift, craneTons: lfv.tons,
+              tankAnode: ($("#sv_sn2") && $("#sv_sn2").value.trim() && $("#sv_tankanode")) ? $("#sv_tankanode").value === "yes" : null
             });
 
             /* Maintenance ticked on this visit restarts from the visit date. */
